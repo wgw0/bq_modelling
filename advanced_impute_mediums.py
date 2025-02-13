@@ -100,8 +100,10 @@ SELECT
   publisher.ad_format,
   publisher.ad_source_name,
   publisher.ad_unit_id
-FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_202502*`
-WHERE event_timestamp IS NOT NULL
+FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20241201' AND '20250228'
+  AND event_timestamp IS NOT NULL
 ORDER BY user_pseudo_id, event_timestamp
 """
 print("Running query...")
