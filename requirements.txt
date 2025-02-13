@@ -1,0 +1,10 @@
+google-cloud-bigquery
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-cloud-core
+google-cloud-storage
+google-cloud-bigquery-storage
+numpy
+pandas
+scikit-learn

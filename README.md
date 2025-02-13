@@ -26,10 +26,27 @@ To run the script, you will need:
 - Access to a BigQuery project and a valid service account JSON key file.
 - The required Python libraries installed: `pandas`, `numpy`, `google-cloud-bigquery`, `google-auth`, and `scikit-learn`.
 
-Simply configure your service account key file path in the script and execute it. The script will print progress messages to the console and finally save an imputed CSV file with a unique filename.
+### We want it online!
 
-## Conclusion
+```md
+# Use a Python base image that has a lot of dependencies pre-installed
+FROM python:3.9-slim
 
-This script provides a practical solution for enhancing your digital analytics by ensuring that all user journeys are attributed to a channel. By combining a robust data extraction process with a straightforward machine learning model, you can achieve more accurate reporting and gain deeper insights into your marketing channels without needing to dive deep into complex data modeling concepts.
+# Create a working directory
+WORKDIR /app
 
-Feel free to adapt and extend the script to suit your specific needs, and enjoy the improved clarity in your analytics data!
+# Copy requirements.txt
+COPY requirements.txt requirements.txt
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy your Python script into the container
+COPY your_script.py .
+
+# (Optional) Copy service-account-key.json if you're not using Workload Identity
+# COPY service-account-key.json /app/service-account-key.json
+
+# Set the entry point
+CMD ["python", "your_script.py"]
+```
