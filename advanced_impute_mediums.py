@@ -1,4 +1,5 @@
 import os
+import uuid
 from google.oauth2 import service_account
 from google.cloud import bigquery
 import pandas as pd
@@ -6,9 +7,21 @@ import numpy as np
 from collections import defaultdict, Counter
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.naive_bayes import MultinomialNB
+
+# ------------------------------------------------------------------------------
+# Helper function to check if a channel value is missing.
+# It returns True if the channel is None, empty, or one of the specified missing values.
+# ------------------------------------------------------------------------------
+def is_missing(channel):
+    if channel is None:
+        return True
+    channel_str = str(channel).strip().lower()
+    return channel_str in ["(none)", "", "unknown", "undefined", "null", "Unassigned"]
+
 # ------------------------------------------------------------------------------
 # Advanced Channel Imputation through Python Modelling
 # ------------------------------------------------------------------------------
+
 # ------------------------------------------------------------------------------
 # STEP 0: Set up BigQuery client using the service account key file.
 # ------------------------------------------------------------------------------
@@ -100,12 +113,12 @@ print("=" * 60, "\n")
 print("=" * 60)
 print("STEP 4: Building journey-level classifier for channel imputation")
 # We'll build training data from journeys that have complete channel info (i.e. no missing channels).
-# We assume missing channels are indicated by "(none)".
+# We assume missing channels are indicated by is_missing(original_channel)==True.
 X_train_dicts = []
 y_train = []
 for user, events in user_journeys.items():
     # Check if any event has missing channel.
-    if any(e['original_channel'] == "(none)" for e in events):
+    if any(is_missing(e['original_channel']) for e in events):
         continue  # Skip journeys with missing values for training
     # We use events in the "middle" of the journey (exclude first and last, which are artificial markers)
     journey_middle = events[1:-1]
@@ -140,7 +153,7 @@ print("STEP 5: Predicting dominant channel for journeys with missing values and 
 # For each journey with missing channels, predict the dominant channel using the classifier.
 for user, events in user_journeys.items():
     # Check if the journey has any missing channel.
-    if not any(e['original_channel'] == "(none)" for e in events):
+    if not any(is_missing(e['original_channel']) for e in events):
         continue
     journey_middle = events[1:-1]
     if not journey_middle:
@@ -150,14 +163,14 @@ for user, events in user_journeys.items():
     predicted_channel = clf.predict(X_test)[0]
     # Impute every event in the journey with missing channel.
     for e in events:
-        if e['original_channel'] == "(none)":
+        if is_missing(e['original_channel']):
             e['final_channel'] = predicted_channel
 
 print("Imputation complete. Example imputed events:")
 imputed_sample = []
 for user, events in user_journeys.items():
     for e in sorted(events, key=lambda x: x['event_timestamp']):
-        if e['original_channel'] == "(none)":
+        if is_missing(e['original_channel']):
             imputed_sample.append(e)
     if len(imputed_sample) >= 10:
         break
@@ -176,8 +189,11 @@ for user, events in user_journeys.items():
     for e in events:
         imputed_events.append(e)
 imputed_df = pd.DataFrame(imputed_events)
-# Retain key fields: user_pseudo_id, event_timestamp, original_channel, final_channel, event_name.
+# Retain key fields: user_pseudo_id, event_timestamp, event_name, original_channel, final_channel.
 imputed_df = imputed_df[['user_pseudo_id', 'event_timestamp', 'event_name', 'original_channel', 'final_channel']]
-imputed_df.to_csv("imputed_events.csv", index=False)
-print("Imputed event-level data saved to 'imputed_events.csv'")
+# Generate a unique filename with an 8-character hex identifier.
+unique_id = uuid.uuid4().hex[:8]
+filename = f"imputed_events_{unique_id}.csv"
+imputed_df.to_csv(filename, index=False)
+print(f"Imputed event-level data saved to '{filename}'")
 print("=" * 60, "\n")
