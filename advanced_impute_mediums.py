@@ -58,7 +58,7 @@ print("=" * 60, "\n")
 # ------------------------------------------------------------------------------
 print("=" * 60)
 print("STEP 2: Marking conversion events")
-conversion_events = ['purchase', 'conversion']  # Example conversion events
+conversion_events = ['purchase', 'form_submit']  # Example conversion events
 df['is_conversion'] = np.where(df['event_name'].isin(conversion_events), 1, 0)
 num_conversions = df['is_conversion'].sum()
 print(f"Total conversion events flagged: {num_conversions}")
