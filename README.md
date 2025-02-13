@@ -4,7 +4,7 @@ This repository contains a set of complex SQL queries for interacting with large
 
 ## Advanced Channel Imputation Script Logic
 
-advanced_impute_mediums.py
+[advanced_impute_mediums.py](https://github.com/wgw0/bq_sql/blob/master/advanced_impute_mediums.py)
 
 ### 1. Mark Which Events Are Conversions
 - **What:**  
