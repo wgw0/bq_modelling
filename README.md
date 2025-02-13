@@ -1,49 +1,33 @@
-# BigQuery SQL
+# Journey-Level Channel Imputation Script
 
-This repository contains a set of complex SQL queries for interacting with large analytics data sets stored in BigQuery.
+## Overview
 
-## Advanced Channel Imputation Script Logic
+This script enhances your digital analytics data by filling in missing channel information in user journeys. It connects to BigQuery to retrieve event-level data from your Google Analytics events table—including campaign parameters, device details, geographic information, and more—and reconstructs each user’s journey. Using these rich feature profiles, it then trains a predictive model on complete journeys to identify the dominant channel. Once trained, the model imputes the missing channel values for incomplete journeys, outputting a CSV file that can be joined back to your BigQuery tables for further analysis.
 
-[advanced_impute_mediums.py](https://github.com/wgw0/bq_sql/blob/master/advanced_impute_mediums.py)
+## Steps
 
-### 1. Mark Which Events Are Conversions
-- **What:**  
-  The script checks the event name.
-- **How:**  
-  If the event is something like `"purchase"` or `"conversion"`, it flags that event as a conversion.
-- **Why:**  
-  This conversion flag tells the script whether a user's journey eventually led to a sale or conversion.
+After the data is retrieved, the script flags conversion events (e.g., form submits) and groups the events by user to form individual journeys. Each journey is then enriched with a wide variety of features. For example, numeric fields like event value and revenue are bucketed into ranges so that the model can work with categorical data rather than raw numbers.
 
-### 2. Create a User’s Journey
-- **What:**  
-  For each user, the script sorts their events by time.
-- **How:**  
-  It creates a list (or "journey") that:
-  - Starts with the special word `"Start"`.
-  - Follows with all the channels the user encountered.
-  - Ends with `"Conversion"` if the user converted, or `"Null"` if they did not.
-- **Example:**  
-  `['Start', 'organic', 'organic', 'Null']` means:
-  - The user journey started,
-  - Saw the channel `"organic"` twice,
-  - And ended without a conversion.
+Next, the script trains a **Multinomial Naive Bayes classifier** using only the journeys that have complete channel information. The model learns to associate aggregated journey features (e.g., types of events, device information, geo details) with the most common channel observed in the journey.
 
-### 3. Train a Model Using Complete Journeys
-- **What:**  
-  The script identifies "complete" journeys—those that have no missing channel values.
-- **How:**  
-  - It looks at all the event names (e.g., `"page_view"`, `"click"`, etc.) that occur in the journey.
-  - It counts how often each event appears.
-  - Then it determines the most common channel in these journeys (for example, `"organic"` might be the most frequent).
-- **Why:**  
-  This process learns from clean, complete examples to understand which channel usually drives a certain type of journey.
+Finally, for journeys where the channel data is missing, the same feature extraction process is applied. The trained model predicts the most likely channel, and the script updates the journey with the imputed channel value. The resulting data is then saved as a CSV file for further use.
 
-### 4. Fill in the Missing Channels
-- **What:**  
-  For journeys that have missing channels (labeled as `"(none)"`).
-- **How:**  
-  - The script examines the events in the incomplete journey.
-  - It uses the pattern learned from complete journeys to predict the most likely channel.
-  - It then replaces the missing channel (`"(none)"`) with the predicted channel.
-- **Why:**  
-  This retroactive imputation enriches the dataset, allowing you to update your records with a more complete and accurate view of the user's journey.
+## Model Details
+
+The core of the prediction process is a [**Multinomial Naive Bayes classifier**](https://scikit-learn.org/stable/modules/generated/sklearn.naive_bayes.MultinomialNB.html). This model is suited to tasks where features represent counts or frequencies, which is why it works well with our aggregated, bucketed event data.
+
+Naive Bayes classifiers work on the principle of calculating the probability of each class (or channel, in this case) based on the frequency of features. Despite the simplifying assumption that features are independent (which might not always hold true in practice), the model is fast, easy to interpret, and surprisingly effective for many real-world problems. Its simplicity and efficiency make it a popular choice for predictive analytics tasks where the goal is to quickly infer probabilities from categorical data.
+
+## Getting Started
+
+To run the script, you will need:
+- Access to a BigQuery project and a valid service account JSON key file.
+- The required Python libraries installed: `pandas`, `numpy`, `google-cloud-bigquery`, `google-auth`, and `scikit-learn`.
+
+Simply configure your service account key file path in the script and execute it. The script will print progress messages to the console and finally save an imputed CSV file with a unique filename.
+
+## Conclusion
+
+This script provides a practical solution for enhancing your digital analytics by ensuring that all user journeys are attributed to a channel. By combining a robust data extraction process with a straightforward machine learning model, you can achieve more accurate reporting and gain deeper insights into your marketing channels without needing to dive deep into complex data modeling concepts.
+
+Feel free to adapt and extend the script to suit your specific needs, and enjoy the improved clarity in your analytics data!
