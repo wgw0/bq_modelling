@@ -1,5 +1,6 @@
 import os
 import uuid
+import time  # Added for time measurement
 from collections import defaultdict, Counter
 import numpy as np
 import pandas as pd
@@ -8,6 +9,9 @@ from google.cloud import bigquery
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.model_selection import cross_val_score
+
+# Record the start time for the entire process.
+start_time = time.time()
 
 # ------------------------------------------------------------------------------
 # Helper function: Check if a channel value is missing.
@@ -46,8 +50,6 @@ print("=" * 30, "\n")
 
 # ------------------------------------------------------------------------------
 # STEP 1: Query event-level data from BigQuery.
-# The query now extracts many additional fields from the table, including selected 
-# event_params keys and extra device, geo, app, traffic, ecommerce, and publisher info.
 # ------------------------------------------------------------------------------
 print("=" * 30)
 print("STEP 1: Querying event-level data from BigQuery")
@@ -107,7 +109,13 @@ WHERE
 ORDER BY user_pseudo_id, event_timestamp
 """
 print("Running query...")
-df = client.query(query).to_dataframe()
+query_job = client.query(query)
+df = query_job.to_dataframe()
+
+# Capture the amount of data processed by the query (in MB).
+query_data_bytes = query_job.total_bytes_processed
+query_data_mb = query_data_bytes / (1024 * 1024)
+print(f"Data processed by query: {query_data_mb:.2f} MB")
 print("Data retrieved: {} rows.".format(len(df)))
 print("=" * 30, "\n")
 
@@ -317,7 +325,6 @@ print("=" * 30, "\n")
 
 # ------------------------------------------------------------------------------
 # STEP 5: Predict and Impute Missing Channels for Incomplete Journeys.
-# For journeys with missing channel info, we aggregate features and predict the dominant channel.
 # ------------------------------------------------------------------------------
 print("=" * 30)
 print("STEP 5: Predicting dominant channel for journeys with missing values and imputing them")
@@ -359,4 +366,15 @@ unique_id = uuid.uuid4().hex[:8]
 filename = f"imputed_events_{unique_id}.csv"
 imputed_df.to_csv(filename, index=False)
 print(f"Imputed event-level data saved to '{filename}'")
+print("=" * 30, "\n")
+
+# ------------------------------------------------------------------------------
+# Final Reporting: Print query data usage and total processing time.
+# ------------------------------------------------------------------------------
+end_time = time.time()
+elapsed_time = end_time - start_time  # in seconds
+
+print("=" * 30)
+print(f"Total data processed by query: {query_data_mb:.2f} MB")
+print(f"Total process time: {elapsed_time:.2f} seconds")
 print("=" * 30, "\n")
