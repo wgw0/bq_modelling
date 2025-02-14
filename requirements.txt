@@ -4,3 +4,4 @@ google-auth>=2.0.0
 google-cloud-bigquery>=3.0.0
 scikit-learn>=0.24.0
 tensorflow>=2.18.0
+db-dtypes
