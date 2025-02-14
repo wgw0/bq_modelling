@@ -1,7 +1,7 @@
 import os
 import uuid
-import time  # Added for time measurement
-from collections import defaultdict, Counter
+import time 
+from collections import defaultdict, Counter 
 import numpy as np
 import pandas as pd
 from google.oauth2 import service_account
@@ -120,7 +120,7 @@ print("Data retrieved: {} rows.".format(len(df)))
 print("=" * 30, "\n")
 
 # ------------------------------------------------------------------------------
-# STEP 2: Mark conversion events (using key event names).
+# STEP 2: Mark conversion events (using key event names). 
 # ------------------------------------------------------------------------------
 print("=" * 30)
 print("STEP 2: Marking conversion events")
