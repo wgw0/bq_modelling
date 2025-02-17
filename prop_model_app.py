@@ -312,7 +312,7 @@ vec.fit(all_event_dicts)
 X_agg = vec.transform(X_agg_dicts)
 
 # Transform each event in the sequence and pad/truncate sequences to a fixed length.
-max_seq_length = 20  # Adjust as needed.
+max_seq_length = 20  # Covers 90% of journeys as found from 'visualize_journey_events.py'
 X_seq = []
 for seq in X_seq_dicts:
     seq_vec = vec.transform(seq)
