@@ -1,5 +1,6 @@
 import os
 import uuid
+import logging
 from collections import defaultdict, Counter
 import numpy as np
 import pandas as pd
@@ -13,10 +14,39 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Dropout, LSTM, Masking, Concatenate
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Configuration and Hyperparameters
+# -----------------------------------------------------------------------------
+SERVICE_ACCOUNT_FILE = "service-account-key.json"
+MAX_SEQ_LENGTH = 20  # Adjust based on your analysis (e.g., 20, 28, or 30)
+EPOCHS = 40
+BATCH_SIZE = 32
+LEARNING_RATE = 0.001
+RANDOM_STATE = 42
+BQ_DATE_RANGE = ("20241001", "20250228")
+
+# Set random seeds for reproducibility.
+np.random.seed(RANDOM_STATE)
+tf.random.set_seed(RANDOM_STATE)
+
+# Generate a unique model ID using the current UUID generation method.
+unique_model_id = uuid.uuid4().hex[:8]
+model_dir = "models"
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
+MODEL_CHECKPOINT_PATH = os.path.join(model_dir, f"model_{unique_model_id}.h5")
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+# Simplify logging output to just show messages for a cleaner terminal output.
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+# -----------------------------------------------------------------------------
 # Helper Functions
-# =============================================================================
+# -----------------------------------------------------------------------------
 def is_missing(channel):
     if channel is None:
         return True
@@ -104,372 +134,388 @@ def extract_event_features(e):
 
     return feat
 
-# =============================================================================
-# STEP 0: Set up BigQuery Client
-# =============================================================================
-print("=" * 30)
-print("STEP 0: Setting up BigQuery client using service-account-key.json")
-credentials = service_account.Credentials.from_service_account_file("service-account-key.json")
-client = bigquery.Client(credentials=credentials, project=credentials.project_id)
-print("Client created for project:", credentials.project_id)
-print("=" * 30, "\n")
+# -----------------------------------------------------------------------------
+# Data Loading and Preprocessing Functions
+# -----------------------------------------------------------------------------
+def setup_bigquery_client():
+    """Set up and return a BigQuery client using the service account."""
+    try:
+        credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
+        client = bigquery.Client(credentials=credentials, project=credentials.project_id)
+        logging.info("=" * 30)
+        logging.info(f"STEP 0: BigQuery client created for project: {credentials.project_id}")
+        logging.info("=" * 30 + "\n")
+        return client
+    except Exception as e:
+        logging.error("Error setting up BigQuery client.", exc_info=True)
+        raise e
 
-# =============================================================================
-# STEP 1: Query Event-Level Data from BigQuery
-# =============================================================================
-print("=" * 30)
-print("STEP 1: Querying event-level data from BigQuery")
-query = """
-SELECT
-  event_date,
-  event_timestamp,
-  event_name,
-  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1) AS campaign,
-  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1) AS campaign_medium,
-  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) AS campaign_source,
-  event_value_in_usd,
-  user_id,
-  user_pseudo_id,
-  user_first_touch_timestamp,
-  user_ltv.revenue AS user_ltv_revenue,
-  user_ltv.currency AS user_ltv_currency,
-  device.category AS device_category,
-  device.operating_system AS device_os,
-  device.mobile_brand_name,
-  device.mobile_model_name,
-  device.operating_system_version,
-  device.language,
-  device.browser,
-  device.browser_version,
-  geo.country AS geo_country,
-  geo.city AS geo_city,
-  geo.continent AS geo_continent,
-  geo.region AS geo_region,
-  geo.sub_continent AS geo_sub_continent,
-  geo.metro AS geo_metro,
-  app_info.id AS app_id,
-  app_info.version AS app_version,
-  app_info.install_store,
-  app_info.firebase_app_id,
-  app_info.install_source,
-  traffic_source.name AS traffic_source_name,
-  traffic_source.medium AS traffic_source_medium,
-  traffic_source.source AS traffic_source_source,
-  platform,
-  ecommerce.purchase_revenue_in_usd,
-  collected_traffic_source.manual_campaign_id,
-  collected_traffic_source.manual_campaign_name,
-  collected_traffic_source.manual_source,
-  collected_traffic_source.manual_medium,
-  is_active_user,
-  session_traffic_source_last_click.cross_channel_campaign.primary_channel_group AS channel,
-  publisher.ad_revenue_in_usd,
-  publisher.ad_format,
-  publisher.ad_source_name,
-  publisher.ad_unit_id
-FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
-WHERE
-  _TABLE_SUFFIX BETWEEN '20241001' AND '20250228'
-  AND event_timestamp IS NOT NULL
-ORDER BY user_pseudo_id, event_timestamp
-"""
-print("Running query...")
-df = client.query(query).to_dataframe()
-print("Data retrieved: {} rows.".format(len(df)))
-print("=" * 30, "\n")
+def query_event_data(client):
+    """Query event-level data from BigQuery."""
+    query = f"""
+    SELECT
+      event_date,
+      event_timestamp,
+      event_name,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1) AS campaign,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1) AS campaign_medium,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) AS campaign_source,
+      event_value_in_usd,
+      user_id,
+      user_pseudo_id,
+      user_first_touch_timestamp,
+      user_ltv.revenue AS user_ltv_revenue,
+      user_ltv.currency AS user_ltv_currency,
+      device.category AS device_category,
+      device.operating_system AS device_os,
+      device.mobile_brand_name,
+      device.mobile_model_name,
+      device.operating_system_version,
+      device.language,
+      device.browser,
+      device.browser_version,
+      geo.country AS geo_country,
+      geo.city AS geo_city,
+      geo.continent AS geo_continent,
+      geo.region AS geo_region,
+      geo.sub_continent AS geo_sub_continent,
+      geo.metro AS geo_metro,
+      app_info.id AS app_id,
+      app_info.version AS app_version,
+      app_info.install_store,
+      app_info.firebase_app_id,
+      app_info.install_source,
+      traffic_source.name AS traffic_source_name,
+      traffic_source.medium AS traffic_source_medium,
+      traffic_source.source AS traffic_source_source,
+      platform,
+      ecommerce.purchase_revenue_in_usd,
+      collected_traffic_source.manual_campaign_id,
+      collected_traffic_source.manual_campaign_name,
+      collected_traffic_source.manual_source,
+      collected_traffic_source.manual_medium,
+      is_active_user,
+      session_traffic_source_last_click.cross_channel_campaign.primary_channel_group AS channel,
+      publisher.ad_revenue_in_usd,
+      publisher.ad_format,
+      publisher.ad_source_name,
+      publisher.ad_unit_id
+    FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
+    WHERE
+      _TABLE_SUFFIX BETWEEN '{BQ_DATE_RANGE[0]}' AND '{BQ_DATE_RANGE[1]}'
+      AND event_timestamp IS NOT NULL
+    ORDER BY user_pseudo_id, event_timestamp
+    """
+    try:
+        logging.info("STEP 1: Querying event-level data from BigQuery")
+        logging.info("Running query...")
+        df = client.query(query).to_dataframe()
+        logging.info(f"Data retrieved: {len(df)} rows.")
+        logging.info("=" * 30 + "\n")
+        return df
+    except Exception as e:
+        logging.error("Error executing BigQuery query.", exc_info=True)
+        raise e
 
-# =============================================================================
-# STEP 2: Mark Conversion Events
-# =============================================================================
-print("=" * 30)
-print("STEP 2: Marking conversion events")
-conversion_events = ['form_submit', 'form_submit_contact']
-df['is_conversion'] = np.where(df['event_name'].isin(conversion_events), 1, 0)
-print("Total conversion events flagged:", df['is_conversion'].sum())
-print("=" * 30, "\n")
+def mark_conversion_events(df):
+    """Mark conversion events in the DataFrame."""
+    conversion_events = ['form_submit', 'form_submit_contact']
+    df['is_conversion'] = np.where(df['event_name'].isin(conversion_events), 1, 0)
+    logging.info("STEP 2: Marking conversion events")
+    logging.info(f"Total conversion events flagged: {df['is_conversion'].sum()}")
+    logging.info("=" * 30 + "\n")
+    return df
 
-# =============================================================================
-# STEP 3: Build Event-Level Journeys
-# =============================================================================
-print("=" * 30)
-print("STEP 3: Building event-level journeys for each user")
-journey_events = []
-for user, group in df.groupby('user_pseudo_id'):
-    group = group.sort_values('event_timestamp')
-    # Loop through each event and store necessary fields.
-    for idx, row in group.iterrows():
-        journey_events.append({
-            'user_pseudo_id': row['user_pseudo_id'],
-            'event_date': row['event_date'],
-            'event_timestamp': row['event_timestamp'],
-            'event_name': row['event_name'],
-            'original_channel': row['channel'],
-            'final_channel': row['channel'],  # initially the same
-            'campaign': row['campaign'],
-            'campaign_medium': row['campaign_medium'],
-            'campaign_source': row['campaign_source'],
-            'event_value_in_usd': row['event_value_in_usd'],
-            'user_id': row['user_id'],
-            'user_first_touch_timestamp': row['user_first_touch_timestamp'],
-            'user_ltv_revenue': row['user_ltv_revenue'],
-            'user_ltv_currency': row['user_ltv_currency'],
-            'device_category': row['device_category'],
-            'device_os': row['device_os'],
-            'mobile_brand_name': row['mobile_brand_name'],
-            'mobile_model_name': row['mobile_model_name'],
-            'operating_system_version': row['operating_system_version'],
-            'language': row['language'],
-            'browser': row['browser'],
-            'browser_version': row['browser_version'],
-            'geo_country': row['geo_country'],
-            'geo_city': row['geo_city'],
-            'geo_continent': row['geo_continent'],
-            'geo_region': row['geo_region'],
-            'geo_sub_continent': row['geo_sub_continent'],
-            'geo_metro': row['geo_metro'],
-            'app_id': row['app_id'],
-            'app_version': row['app_version'],
-            'install_store': row['install_store'],
-            'firebase_app_id': row['firebase_app_id'],
-            'install_source': row['install_source'],
-            'traffic_source_name': row['traffic_source_name'],
-            'traffic_source_medium': row['traffic_source_medium'],
-            'traffic_source_source': row['traffic_source_source'],
-            'platform': row['platform'],
-            'purchase_revenue_in_usd': row['purchase_revenue_in_usd'],
-            'manual_campaign_id': row['manual_campaign_id'],
-            'manual_campaign_name': row['manual_campaign_name'],
-            'manual_source': row['manual_source'],
-            'manual_medium': row['manual_medium'],
-            'is_active_user': row['is_active_user'],
-            'ad_revenue_in_usd': row['ad_revenue_in_usd'],
-            'ad_format': row['ad_format'],
-            'ad_source_name': row['ad_source_name'],
-            'ad_unit_id': row['ad_unit_id']
-        })
-# Group events by user to form journeys.
-user_journeys = defaultdict(list)
-for event in journey_events:
-    user_journeys[event['user_pseudo_id']].append(event)
-print("Constructed journeys for {} users.".format(len(user_journeys)))
-print("=" * 30, "\n")
+def build_event_journeys(df):
+    """Group events by user to form journeys."""
+    logging.info("STEP 3: Building event-level journeys for each user")
+    journey_events = []
+    for user, group in df.groupby('user_pseudo_id'):
+        group = group.sort_values('event_timestamp')
+        for _, row in group.iterrows():
+            journey_events.append({
+                'user_pseudo_id': row['user_pseudo_id'],
+                'event_date': row['event_date'],
+                'event_timestamp': row['event_timestamp'],
+                'event_name': row['event_name'],
+                'original_channel': row['channel'],
+                'final_channel': row['channel'],  # initially the same
+                'campaign': row['campaign'],
+                'campaign_medium': row['campaign_medium'],
+                'campaign_source': row['campaign_source'],
+                'event_value_in_usd': row['event_value_in_usd'],
+                'user_id': row['user_id'],
+                'user_first_touch_timestamp': row['user_first_touch_timestamp'],
+                'user_ltv_revenue': row['user_ltv_revenue'],
+                'user_ltv_currency': row['user_ltv_currency'],
+                'device_category': row['device_category'],
+                'device_os': row['device_os'],
+                'mobile_brand_name': row['mobile_brand_name'],
+                'mobile_model_name': row['mobile_model_name'],
+                'operating_system_version': row['operating_system_version'],
+                'language': row['language'],
+                'browser': row['browser'],
+                'browser_version': row['browser_version'],
+                'geo_country': row['geo_country'],
+                'geo_city': row['geo_city'],
+                'geo_continent': row['geo_continent'],
+                'geo_region': row['geo_region'],
+                'geo_sub_continent': row['geo_sub_continent'],
+                'geo_metro': row['geo_metro'],
+                'app_id': row['app_id'],
+                'app_version': row['app_version'],
+                'install_store': row['install_store'],
+                'firebase_app_id': row['firebase_app_id'],
+                'install_source': row['install_source'],
+                'traffic_source_name': row['traffic_source_name'],
+                'traffic_source_medium': row['traffic_source_medium'],
+                'traffic_source_source': row['traffic_source_source'],
+                'platform': row['platform'],
+                'purchase_revenue_in_usd': row['purchase_revenue_in_usd'],
+                'manual_campaign_id': row['manual_campaign_id'],
+                'manual_campaign_name': row['manual_campaign_name'],
+                'manual_source': row['manual_source'],
+                'manual_medium': row['manual_medium'],
+                'is_active_user': row['is_active_user'],
+                'ad_revenue_in_usd': row['ad_revenue_in_usd'],
+                'ad_format': row['ad_format'],
+                'ad_source_name': row['ad_source_name'],
+                'ad_unit_id': row['ad_unit_id']
+            })
+    user_journeys = defaultdict(list)
+    for event in journey_events:
+        user_journeys[event['user_pseudo_id']].append(event)
+    logging.info(f"Constructed journeys for {len(user_journeys)} users.")
+    logging.info("=" * 30 + "\n")
+    return user_journeys
 
-# =============================================================================
-# STEP 4: Prepare Training Data for the Proprietary Model
-# =============================================================================
-print("=" * 30)
-print("STEP 4: Preparing training data for proprietary model")
-X_agg_dicts = []  # Aggregated features per journey
-X_seq_dicts = []  # Sequence (list) of per-event feature dictionaries per journey
-y_labels = []     # Dominant channel label per journey
-complete_journey_count = 0
+def prepare_training_data(user_journeys):
+    """Prepare aggregated and sequential features along with labels for training."""
+    logging.info("STEP 4: Preparing training data for proprietary model")
+    X_agg_dicts = []  # Aggregated features per journey
+    X_seq_dicts = []  # Sequence (list) of per-event feature dictionaries per journey
+    y_labels = []     # Dominant channel label per journey
+    complete_journey_count = 0
 
-for user, events in user_journeys.items():
-    # Skip journeys that are too short.
-    if len(events) < 2:
-        continue
-    # Only use journeys with complete channel info for training.
-    if any(is_missing(e.get('original_channel')) for e in events):
-        continue
-    # Use the "middle" events (if available) for feature aggregation.
-    if len(events) > 2:
-        journey_middle = events[1:-1]
-    else:
-        journey_middle = events
-    if not journey_middle:
-        continue
-    agg_counter = Counter()
-    seq_list = []
-    for e in journey_middle:
-        features = extract_event_features(e)
-        agg_counter.update(features)
-        seq_list.append(features)
-    # Use the dominant channel from the journey middle as the label.
-    channels = [e.get('original_channel') for e in journey_middle]
-    dominant_channel = Counter(channels).most_common(1)[0][0]
-    X_agg_dicts.append(dict(agg_counter))
-    X_seq_dicts.append(seq_list)
-    y_labels.append(dominant_channel)
-    complete_journey_count += 1
+    for user, events in user_journeys.items():
+        if len(events) < 2:
+            continue
+        if any(is_missing(e.get('original_channel')) for e in events):
+            continue
+        journey_middle = events[1:-1] if len(events) > 2 else events
+        if not journey_middle:
+            continue
+        agg_counter = Counter()
+        seq_list = []
+        for e in journey_middle:
+            features = extract_event_features(e)
+            agg_counter.update(features)
+            seq_list.append(features)
+        channels = [e.get('original_channel') for e in journey_middle]
+        dominant_channel = Counter(channels).most_common(1)[0][0]
+        X_agg_dicts.append(dict(agg_counter))
+        X_seq_dicts.append(seq_list)
+        y_labels.append(dominant_channel)
+        complete_journey_count += 1
 
-print("Number of complete journeys for training:", complete_journey_count)
-print("=" * 30, "\n")
+    logging.info(f"Number of complete journeys for training: {complete_journey_count}")
+    logging.info("=" * 30 + "\n")
+    return X_agg_dicts, X_seq_dicts, y_labels
 
-# =============================================================================
-# STEP 5: Vectorize Feature Dictionaries
-# =============================================================================
-print("=" * 30)
-print("STEP 5: Vectorizing feature dictionaries")
-# Use one DictVectorizer for both aggregated and per-event features.
-vec = DictVectorizer(sparse=False)
-all_event_dicts = []
-for seq in X_seq_dicts:
-    all_event_dicts.extend(seq)
-all_event_dicts.extend(X_agg_dicts)
-vec.fit(all_event_dicts)
+def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
+    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences."""
+    logging.info("STEP 5: Vectorizing feature dictionaries")
+    vec = DictVectorizer(sparse=False)
+    all_event_dicts = []
+    for seq in X_seq_dicts:
+        all_event_dicts.extend(seq)
+    all_event_dicts.extend(X_agg_dicts)
+    vec.fit(all_event_dicts)
 
-# Transform aggregated features.
-X_agg = vec.transform(X_agg_dicts)
+    X_agg = vec.transform(X_agg_dicts)
+    X_seq = []
+    for seq in X_seq_dicts:
+        seq_vec = vec.transform(seq)
+        if seq_vec.shape[0] < max_seq_length:
+            pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
+            seq_vec = np.vstack([seq_vec, pad])
+        else:
+            seq_vec = seq_vec[:max_seq_length, :]
+        X_seq.append(seq_vec)
+    X_seq = np.array(X_seq)
+    logging.info(f"Aggregated feature shape: {X_agg.shape}")
+    logging.info(f"Sequence feature shape: {X_seq.shape}")
+    logging.info("=" * 30 + "\n")
+    return vec, X_agg, X_seq
 
-# Transform each event in the sequence and pad/truncate sequences to a fixed length.
-max_seq_length = 20  # Covers 90% of journeys as found from 'visualize_journey_events.py'
-X_seq = []
-for seq in X_seq_dicts:
-    seq_vec = vec.transform(seq)
-    if seq_vec.shape[0] < max_seq_length:
-        pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
-        seq_vec = np.vstack([seq_vec, pad])
-    else:
-        seq_vec = seq_vec[:max_seq_length, :]
-    X_seq.append(seq_vec)
-X_seq = np.array(X_seq)
-print("Aggregated feature shape:", X_agg.shape)
-print("Sequence feature shape:", X_seq.shape)
-print("=" * 30, "\n")
+def encode_labels(y_labels):
+    """Encode string labels into integers and then into one-hot vectors."""
+    logging.info("STEP 6: Encoding labels")
+    le = LabelEncoder()
+    y_encoded = le.fit_transform(y_labels)
+    num_classes = len(le.classes_)
+    y_categorical = to_categorical(y_encoded, num_classes=num_classes)
+    logging.info(f"Classes: {le.classes_}")
+    logging.info("=" * 30 + "\n")
+    return le, y_categorical, num_classes
 
-# =============================================================================
-# STEP 6: Encode Labels
-# =============================================================================
-print("=" * 30)
-print("STEP 6: Encoding labels")
-le = LabelEncoder()
-y_encoded = le.fit_transform(y_labels)
-num_classes = len(le.classes_)
-y_categorical = to_categorical(y_encoded, num_classes=num_classes)
-print("Classes:", le.classes_)
-print("=" * 30, "\n")
+def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate):
+    """Build and compile the dual-input deep learning model."""
+    logging.info("STEP 8: Building dual-input deep learning model")
+    # Aggregated features branch.
+    input_agg = Input(shape=(input_dim,), name='aggregated_features')
+    x_agg = Dense(64, activation='relu')(input_agg)
+    x_agg = Dropout(0.5)(x_agg)
 
-# =============================================================================
-# STEP 7: Split Data into Training and Validation Sets
-# =============================================================================
-print("=" * 30)
-print("STEP 7: Splitting training data")
-X_agg_train, X_agg_val, X_seq_train, X_seq_val, y_train, y_val = train_test_split(
-    X_agg, X_seq, y_categorical, test_size=0.2, random_state=42
-)
-print("Training and validation data prepared.")
-print("=" * 30, "\n")
+    # Sequence branch.
+    input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
+    x_seq = Masking(mask_value=0.0)(input_seq)
+    x_seq = LSTM(64)(x_seq)
+    x_seq = Dropout(0.5)(x_seq)
 
-# =============================================================================
-# STEP 8: Build the Dual-Input Deep Learning Model
-# =============================================================================
-print("=" * 30)
-print("STEP 8: Building dual-input deep learning model")
-# Aggregated features branch.
-input_agg = Input(shape=(X_agg_train.shape[1],), name='aggregated_features')
-x_agg = Dense(64, activation='relu')(input_agg)
-x_agg = Dropout(0.5)(x_agg)
+    # Combine both branches.
+    combined = Concatenate()([x_agg, x_seq])
+    x = Dense(64, activation='relu')(combined)
+    x = Dropout(0.5)(x)
+    output = Dense(num_classes, activation='softmax')(x)
 
-# Sequence branch.
-input_seq = Input(shape=(max_seq_length, X_seq_train.shape[2]), name='sequence_features')
-x_seq = Masking(mask_value=0.0)(input_seq)
-x_seq = LSTM(64)(x_seq)
-x_seq = Dropout(0.5)(x_seq)
+    model = Model(inputs=[input_agg, input_seq], outputs=output)
+    model.compile(optimizer=Adam(learning_rate=learning_rate),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+    model.summary(print_fn=lambda x: logging.info(x))
+    logging.info("=" * 30 + "\n")
+    return model
 
-# Combine both branches.
-combined = Concatenate()([x_agg, x_seq])
-x = Dense(64, activation='relu')(combined)
-x = Dropout(0.5)(x)
-output = Dense(num_classes, activation='softmax')(x)
+def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
+    """Predict and impute missing channels for journeys with missing values."""
+    logging.info("STEP 11: Imputing missing channels for journeys with missing values")
+    imputed_journeys_count = 0
+    for user, events in user_journeys.items():
+        if not any(is_missing(e.get('original_channel')) for e in events):
+            continue
+        journey_middle = events[1:-1] if len(events) > 2 else events
+        if not journey_middle:
+            continue
+        agg_counter = Counter()
+        seq_list = []
+        for e in journey_middle:
+            features = extract_event_features(e)
+            agg_counter.update(features)
+            seq_list.append(features)
+        # Prepare aggregated feature vector.
+        agg_features = vec.transform([dict(agg_counter)])
+        # Prepare sequence feature vector (pad/truncate).
+        seq_vec = vec.transform(seq_list)
+        if seq_vec.shape[0] < max_seq_length:
+            pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
+            seq_vec = np.vstack([seq_vec, pad])
+        else:
+            seq_vec = seq_vec[:max_seq_length, :]
+        seq_features = np.expand_dims(seq_vec, axis=0)  # Shape: (1, max_seq_length, num_features)
+        
+        # Predict the dominant channel.
+        predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features})
+        predicted_index = np.argmax(predicted_proba, axis=1)[0]
+        predicted_channel = le.inverse_transform([predicted_index])[0]
+        
+        # Update events with missing original_channel.
+        journey_updated = False
+        for e in events:
+            if is_missing(e.get('original_channel')):
+                e['final_channel'] = predicted_channel
+                journey_updated = True
+        if journey_updated:
+            imputed_journeys_count += 1
 
-model = Model(inputs=[input_agg, input_seq], outputs=output)
-model.compile(optimizer=Adam(learning_rate=0.001),
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-model.summary()
-print("=" * 30, "\n")
+    logging.info(f"Number of journeys with missing channels updated: {imputed_journeys_count}")
+    logging.info("=" * 30 + "\n")
+    return user_journeys
 
-# =============================================================================
-# STEP 9: Train the Model
-# =============================================================================
-print("=" * 30)
-print("STEP 9: Training the model")
-history = model.fit(
-    {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
-    y_train,
-    epochs=40,
-    batch_size=32,
-    validation_data=({'aggregated_features': X_agg_val, 'sequence_features': X_seq_val}, y_val)
-)
-print("=" * 30, "\n")
+def export_imputed_events(user_journeys):
+    """Export imputed event-level data to a CSV file."""
+    logging.info("STEP 12: Preparing event-level data for export")
+    imputed_events = []
+    for user, events in user_journeys.items():
+        for e in events:
+            imputed_events.append(e)
+    imputed_df = pd.DataFrame(imputed_events)
+    # Retain only key columns.
+    imputed_df = imputed_df[['user_pseudo_id', 'event_timestamp', 'event_name', 'original_channel', 'final_channel']]
+    unique_id = uuid.uuid4().hex[:8]
+    filename = f"imputed_events_{unique_id}.csv"
+    imputed_df.to_csv(filename, index=False)
+    logging.info(f"Imputed event-level data saved to '{filename}'")
+    logging.info("=" * 30 + "\n")
 
-# =============================================================================
-# STEP 10: Evaluate the Model
-# =============================================================================
-print("=" * 30)
-print("STEP 10: Evaluating the model")
-loss, accuracy = model.evaluate(
-    {'aggregated_features': X_agg_val, 'sequence_features': X_seq_val},
-    y_val
-)
-print("Validation Accuracy: {:.2f}%".format(accuracy * 100))
-print("=" * 30, "\n")
+# -----------------------------------------------------------------------------
+# Main Pipeline
+# -----------------------------------------------------------------------------
+def main():
+    # STEP 0: Set up BigQuery client.
+    client = setup_bigquery_client()
 
-# =============================================================================
-# STEP 11: Predict and Impute Missing Channels for Incomplete Journeys
-# =============================================================================
-print("=" * 30)
-print("STEP 11: Imputing missing channels for journeys with missing values")
-imputed_journeys_count = 0
-for user, events in user_journeys.items():
-    # Process only journeys with any missing original channel.
-    if not any(is_missing(e.get('original_channel')) for e in events):
-        continue
-    # Use middle events for prediction.
-    if len(events) > 2:
-        journey_middle = events[1:-1]
-    else:
-        journey_middle = events
-    if not journey_middle:
-        continue
-    agg_counter = Counter()
-    seq_list = []
-    for e in journey_middle:
-        features = extract_event_features(e)
-        agg_counter.update(features)
-        seq_list.append(features)
-    # Prepare aggregated feature vector.
-    agg_features = vec.transform([dict(agg_counter)])
-    # Prepare sequence feature vector (pad/truncate).
-    seq_vec = vec.transform(seq_list)
-    if seq_vec.shape[0] < max_seq_length:
-        pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
-        seq_vec = np.vstack([seq_vec, pad])
-    else:
-        seq_vec = seq_vec[:max_seq_length, :]
-    seq_features = np.expand_dims(seq_vec, axis=0)  # Shape: (1, max_seq_length, num_features)
-    
-    # Predict the dominant channel.
-    predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features})
-    predicted_index = np.argmax(predicted_proba, axis=1)[0]
-    predicted_channel = le.inverse_transform([predicted_index])[0]
-    
-    # Update events with missing original_channel.
-    journey_updated = False
-    for e in events:
-        if is_missing(e.get('original_channel')):
-            e['final_channel'] = predicted_channel
-            journey_updated = True
-    if journey_updated:
-        imputed_journeys_count += 1
+    # STEP 1: Query event-level data.
+    df = query_event_data(client)
 
-print("Number of journeys with missing channels updated:", imputed_journeys_count)
-print("=" * 30, "\n")
+    # STEP 2: Mark conversion events.
+    df = mark_conversion_events(df)
 
-# =============================================================================
-# STEP 12: Prepare Event-Level Data for Export
-# =============================================================================
-print("=" * 30)
-print("STEP 12: Preparing event-level data for export")
-imputed_events = []
-for user, events in user_journeys.items():
-    for e in events:
-        imputed_events.append(e)
-imputed_df = pd.DataFrame(imputed_events)
-# Retain only the key columns.
-imputed_df = imputed_df[['user_pseudo_id', 'event_timestamp', 'event_name', 'original_channel', 'final_channel']]
-unique_id = uuid.uuid4().hex[:8]
-filename = f"imputed_events_{unique_id}.csv"
-imputed_df.to_csv(filename, index=False)
-print(f"Imputed event-level data saved to '{filename}'")
-print("=" * 30, "\n")
+    # STEP 3: Build event-level journeys.
+    user_journeys = build_event_journeys(df)
+
+    # STEP 4: Prepare training data for the proprietary model.
+    X_agg_dicts, X_seq_dicts, y_labels = prepare_training_data(user_journeys)
+
+    # STEP 5: Vectorize feature dictionaries.
+    vec, X_agg, X_seq = vectorize_features(X_agg_dicts, X_seq_dicts, MAX_SEQ_LENGTH)
+
+    # STEP 6: Encode labels.
+    le, y_categorical, num_classes = encode_labels(y_labels)
+
+    # STEP 7: Split data into training and validation sets.
+    X_agg_train, X_agg_val, X_seq_train, X_seq_val, y_train, y_val = train_test_split(
+        X_agg, X_seq, y_categorical, test_size=0.2, random_state=RANDOM_STATE
+    )
+    logging.info("Training and validation data prepared.")
+    logging.info("=" * 30 + "\n")
+
+    # STEP 8: Build the dual-input deep learning model.
+    model = build_model(input_dim=X_agg_train.shape[1],
+                        seq_length=MAX_SEQ_LENGTH,
+                        seq_features=X_seq_train.shape[2],
+                        num_classes=num_classes,
+                        learning_rate=LEARNING_RATE)
+
+    # STEP 9: Train the model with callbacks.
+    logging.info("STEP 9: Training the model")
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+        ModelCheckpoint(MODEL_CHECKPOINT_PATH, monitor='val_loss', save_best_only=True)
+    ]
+    history = model.fit(
+        {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
+        y_train,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        validation_data=({'aggregated_features': X_agg_val, 'sequence_features': X_seq_val}, y_val),
+        callbacks=callbacks
+    )
+    logging.info("=" * 30 + "\n")
+
+    # STEP 10: Evaluate the model.
+    loss, accuracy = model.evaluate(
+        {'aggregated_features': X_agg_val, 'sequence_features': X_seq_val},
+        y_val
+    )
+    logging.info(f"STEP 10: Validation Accuracy: {accuracy * 100:.2f}%")
+    logging.info("=" * 30 + "\n")
+
+    # STEP 11: Predict and impute missing channels for incomplete journeys.
+    user_journeys = impute_missing_channels(user_journeys, vec, model, le, MAX_SEQ_LENGTH)
+
+    # STEP 12: Prepare event-level data for export.
+    export_imputed_events(user_journeys)
+
+if __name__ == "__main__":
+    main()
