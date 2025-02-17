@@ -387,7 +387,7 @@ print("STEP 9: Training the model")
 history = model.fit(
     {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
     y_train,
-    epochs=20,
+    epochs=40,
     batch_size=32,
     validation_data=({'aggregated_features': X_agg_val, 'sequence_features': X_seq_val}, y_val)
 )
