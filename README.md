@@ -39,6 +39,10 @@ The model is trained on complete journeys, those with all the necessary channel 
 
 Overfitting occurs when a model learns not only the underlying patterns in the training data but also the noise, causing it to perform well on the training set while poorly generalising to unseen data.
 
+**Model Overview Visualised:**
+
+![Model Overview](info/model_overview.png)
+
 **Imputation:**  
 Once the model is trained, it is used to predict missing channel values in journeys where this information is absent. For each incomplete journey, the same feature extraction and vectorisation process used during training is applied. The model then processes these inputs to predict the channel, effectively filling in the gaps in the data. The script automatically updates the journey records with these imputed channel values, and the final, enriched dataset is exported. This imputation process helps to reconstruct a more complete picture of user journeys, which in turn enables more accurate attribution analysis and better-informed decision-making in your digital campaigns.
 
