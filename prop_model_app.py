@@ -17,6 +17,18 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping
 
+# GPU configuration: Ensure TensorFlow uses GPU if available.
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logging.info(f"Using GPU(s): {', '.join([gpu.name for gpu in gpus])}")
+    except RuntimeError as e:
+        logging.error(e)
+else:
+    logging.info("No GPU found. Running on CPU.")
+
 # -----------------------------------------------------------------------------
 # Configuration and Hyperparameters
 # -----------------------------------------------------------------------------
@@ -356,7 +368,7 @@ def prepare_training_data(user_journeys):
     return X_agg_dicts, X_seq_dicts, y_labels
 
 def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
-    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences. Turning into data structures, basically."""
+    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences."""
     logging.info("STEP 4: Vectorizing feature dictionaries")
     vec = DictVectorizer(sparse=False)
     all_event_dicts = []
