@@ -20,7 +20,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 # Configuration and Hyperparameters
 # -----------------------------------------------------------------------------
 SERVICE_ACCOUNT_FILE = "service-account-key.json"
-MAX_SEQ_LENGTH = 20  # Adjust based on your analysis (e.g., 20, 28, or 30)
+MAX_SEQ_LENGTH = 20
 EPOCHS = 40
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001

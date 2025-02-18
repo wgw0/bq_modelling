@@ -34,6 +34,23 @@ The model is trained on complete journeys, those with all the necessary channel 
 **Imputation:**  
 Once the model is trained, it is used to predict missing channel values in journeys where this information is absent. For each incomplete journey, the same feature extraction and vectorisation process used during training is applied. The model then processes these inputs to predict the dominant channel, effectively filling in the gaps in the data. The script automatically updates the journey records with these imputed channel values, and the final, enriched dataset is exported as a CSV file. This imputation process helps to reconstruct a more complete picture of user journeys, which in turn enables more accurate attribution analysis and better-informed decision-making in your digital campaigns.
 
+### Hyperparameters
+
+- MAX_SEQ_LENGTH (20):
+This defines the maximum number of events (the sequence length) considered in each user journey. Sequences shorter than this are padded, and longer sequences are truncated. Adjusting this value changes how much sequential information is fed into the model. This is done so that all sequences have a consistent shape before being fed into the model.
+
+- EPOCHS (40):
+The number of complete passes through the training data during model training. Increasing this number can allow the model more opportunities to learn, but may risk overfitting, whereas reducing it may lead to underfitting. *(Testing resulted in 40 as best match)*
+
+- BATCH_SIZE (32):
+The number of samples processed before the model's weights are updated. A larger batch size might lead to more stable gradient updates but requires more memory, while a smaller batch size can result in noisier updates and potentially slower convergence. *(32 is a default value but works well)*
+
+- LEARNING_RATE (0.001):
+This is the step size used by the optimiser (Adam in this case) when updating the model’s weights. A higher learning rate can accelerate training but may overshoot optimal values, while a lower rate might yield a more precise convergence at the cost of slower training. *(0.001 is a common default for Adam optimiser)*
+
+- RANDOM_STATE (42):
+A seed value used for random number generation to ensure reproducibility of the model training and data splitting. Changing this value will result in different random splits and model initialisations, which could affect performance outcomes.
+
 
 ## Local Setup and Running
 
@@ -46,7 +63,7 @@ Follow these simple steps to run the scripts on your local machine:
    ```
 
 2. **Create a Virtual Environment:**
-   Create a virtual environment using Python (ensure you have Python 3.10.x installed):
+   Create a virtual environment using Python (ensure you have Python **3.10.x** installed):
    ```bash
    python -m venv .venv
    ```
@@ -76,8 +93,3 @@ Follow these simple steps to run the scripts on your local machine:
      ```bash
      python prop_model_app.py
      ```
-   - To run the baseline imputation script:
-     ```bash
-     python advanced_impute_mediums.py
-     ```
-
