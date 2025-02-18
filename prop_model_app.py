@@ -220,8 +220,6 @@ def query_event_data(client):
       publisher.ad_format,
       publisher.ad_source_name,
       publisher.ad_unit_id,
-
-      -- Example: pulling a specific param named 'value' if it exists
       (SELECT value.float_value
        FROM UNNEST(event_params)
        WHERE key = 'value' LIMIT 1
@@ -357,7 +355,7 @@ def prepare_training_data(user_journeys):
     return X_agg_dicts, X_seq_dicts, y_labels
 
 def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
-    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences."""
+    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences. Turning into data structures, basically."""
     logging.info("STEP 4: Vectorizing feature dictionaries")
     vec = DictVectorizer(sparse=False)
     all_event_dicts = []
@@ -399,17 +397,17 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
     # Aggregated features branch with extra dense layers.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
     x_agg = Dense(128, activation='relu')(input_agg)
-    x_agg = Dropout(0.5)(x_agg)
+    x_agg = Dropout(0.25)(x_agg)
     x_agg = Dense(64, activation='relu')(x_agg)
-    x_agg = Dropout(0.5)(x_agg)
+    x_agg = Dropout(0.25)(x_agg)
     
     # Sequential branch with stacked LSTM layers.
     input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
     x_seq = Masking(mask_value=0.0)(input_seq)
     x_seq = LSTM(128, return_sequences=True)(x_seq)
-    x_seq = Dropout(0.5)(x_seq)
+    x_seq = Dropout(0.25)(x_seq)
     x_seq = LSTM(64)(x_seq)
-    x_seq = Dropout(0.5)(x_seq)
+    x_seq = Dropout(0.25)(x_seq)
     
     # Merge branches and add further dense layers.
     merged = Concatenate()([x_agg, x_seq])
@@ -424,7 +422,7 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
     model.summary(print_fn=lambda x: logging.info(x))
-    logging.info("=" * 30 + "HERE" + "\n")
+    logging.info("=" * 30 + "\n")
     return model
 
 def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):

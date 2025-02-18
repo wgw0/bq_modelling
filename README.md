@@ -25,11 +25,13 @@ First, conversion events (such as form submissions) are identified and marked as
 
 **Model Building:**  
 
+**Model Building:**
+
 The model employs a dual-input architecture to simultaneously process two types of information from user journeys, achieving understanding-based accuracy in channel prediction.
 
-One branch condenses aggregated features, such as: event counts, bucketed numerical values, and overall trends, into a [summary vector](https://neptune.ai/blog/understanding-vectors-from-a-machine-learning-perspective) that is processed with [dense layers](https://datascientest.com/en/dense-neural-networks-understanding-their-structure-and-function) to capture the big picture. 
+One branch condenses aggregated features, such as event counts, bucketed numerical values, and overall trends, into a [summary vector](https://neptune.ai/blog/understanding-vectors-from-a-machine-learning-perspective) that is processed with **two dense layers** (the first with 128 units and the second with 64 units, each followed by [dropout](https://www.dremio.com/wiki/dropout-in-neural-networks/#:~:text=Dropout%20in%20Neural%20Networks%20operates,to%20generalize%20to%20new%20data.)) to capture the big picture.
 
-In parallel, the other branch leverages an [LSTM layer](https://en.wikipedia.org/wiki/Long_short-term_memory) to analyse the sequence of individual events, capturing the order, timing, and detailed temporal context of user interactions. These two streams are merged and further processed through additional dense layers with a [softmax output](https://en.wikipedia.org/wiki/Softmax_function), enabling the model to learn complex, non-linear relationships and deliver more accurate channel predictions.
+In parallel, the other branch leverages **two stacked LSTM layers** (the first with 128 units and the second with 64 units, with dropout applied after each) to analyse the sequence of individual events, capturing the order, timing, and detailed parameter data of user interactions. These two streams are merged and further processed through **two additional dense layers** (with 64 and 32 units, respectively, each followed by dropout) with a [softmax output](https://en.wikipedia.org/wiki/Softmax_function), enabling the model to learn complex, non-linear relationships and deliver more accurate channel predictions.
 
 
 **Training and Evaluation:**  
