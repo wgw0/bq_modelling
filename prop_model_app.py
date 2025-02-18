@@ -1,3 +1,5 @@
+import time
+
 import os
 import uuid
 import logging
@@ -397,17 +399,17 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
     # Aggregated features branch with extra dense layers.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
     x_agg = Dense(128, activation='relu')(input_agg)
-    x_agg = Dropout(0.25)(x_agg)
+    x_agg = Dropout(0.5)(x_agg)
     x_agg = Dense(64, activation='relu')(x_agg)
-    x_agg = Dropout(0.25)(x_agg)
+    x_agg = Dropout(0.5)(x_agg)
     
     # Sequential branch with stacked LSTM layers.
     input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
     x_seq = Masking(mask_value=0.0)(input_seq)
     x_seq = LSTM(128, return_sequences=True)(x_seq)
-    x_seq = Dropout(0.25)(x_seq)
+    x_seq = Dropout(0.5)(x_seq)
     x_seq = LSTM(64)(x_seq)
-    x_seq = Dropout(0.25)(x_seq)
+    x_seq = Dropout(0.5)(x_seq)
     
     # Merge branches and add further dense layers.
     merged = Concatenate()([x_agg, x_seq])
@@ -493,6 +495,7 @@ def export_imputed_events(user_journeys):
 # Main Pipeline
 # -----------------------------------------------------------------------------
 def main():
+    start_time = time.time()
     # STEP 0: Set up BigQuery client.
     client = setup_bigquery_client()
 
@@ -560,6 +563,9 @@ def main():
 
     # STEP 11: Prepare event-level data for export.
     export_imputed_events(user_journeys)
+    end_time = time.time()
+    elapsed_seconds = end_time - start_time
+    print(f"Approximate vCPU seconds: {elapsed_seconds:.2f}")
 
 if __name__ == "__main__":
     main()
