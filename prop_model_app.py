@@ -229,7 +229,7 @@ def build_event_journeys(df):
                 'event_timestamp': row['event_timestamp'],
                 'event_name': row['event_name'],
                 'original_channel': row['channel'],
-                'final_channel': row['channel'],  # initially the same
+                'final_channel': row['channel'],
                 'campaign': row['campaign'],
                 'campaign_medium': row['campaign_medium'],
                 'campaign_source': row['campaign_source'],
@@ -350,32 +350,39 @@ def encode_labels(y_labels):
     return le, y_categorical, num_classes
 
 def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate):
-    """Build and compile the dual-input deep learning model."""
-    logging.info("STEP 7: Building dual-input deep learning model")
-    # Aggregated features branch.
+    logging.info("Building a deeper dual-input deep learning model")
+    
+    # Aggregated features branch with extra dense layers.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
-    x_agg = Dense(64, activation='relu')(input_agg)
+    x_agg = Dense(128, activation='relu')(input_agg)
     x_agg = Dropout(0.5)(x_agg)
-
-    # Sequence branch.
+    x_agg = Dense(64, activation='relu')(x_agg)
+    x_agg = Dropout(0.5)(x_agg)
+    
+    # Sequential branch with stacked LSTM layers.
     input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
     x_seq = Masking(mask_value=0.0)(input_seq)
+    x_seq = LSTM(128, return_sequences=True)(x_seq)
+    x_seq = Dropout(0.5)(x_seq)
     x_seq = LSTM(64)(x_seq)
     x_seq = Dropout(0.5)(x_seq)
-
-    # Combine both branches.
-    combined = Concatenate()([x_agg, x_seq])
-    x = Dense(64, activation='relu')(combined)
+    
+    # Merge branches and add further dense layers.
+    merged = Concatenate()([x_agg, x_seq])
+    x = Dense(64, activation='relu')(merged)
+    x = Dropout(0.5)(x)
+    x = Dense(32, activation='relu')(x)
     x = Dropout(0.5)(x)
     output = Dense(num_classes, activation='softmax')(x)
-
+    
     model = Model(inputs=[input_agg, input_seq], outputs=output)
     model.compile(optimizer=Adam(learning_rate=learning_rate),
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
     model.summary(print_fn=lambda x: logging.info(x))
-    logging.info("=" * 30 + "\n")
+    logging.info("=" * 30 + "HERE" + "\n")
     return model
+
 
 def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     """Predict and impute missing channels for journeys with missing values."""
