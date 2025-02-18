@@ -7,3 +7,4 @@ __pycache__
 *.db
 service-account-key.json
 *.csv
+models/*

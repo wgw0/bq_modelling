@@ -4,9 +4,9 @@
 
 Digital campaigns are expensive, and accurate measurement of user interactions is key to understanding which channels drive performance. However, with growing privacy settings and users opting out of cookie tracking, much of your data can lack channel information. This gap can distort your attribution models, potentially leading you to underestimate some channels and over-invest in others.
 
-While solutions like Google’s [Consent Mode](https://support.google.com/google-ads/answer/10000067?hl=en-GB) provide a high-level statistical approach to filling these gaps, they often apply a one-size-fits-all strategy that may not capture the nuances of your specific data. There is a need for a more tailored solution, one that constructs a detailed picture of each user journey by linking all available event data (including campaign parameters, device information, geotargeting, and other user signals). 
+While solutions like Google’s [Consent Mode](https://support.google.com/google-ads/answer/10000067?hl=en-GB) provide a high-level statistical approach to filling these gaps, they often apply a one-size-fits-all strategy that may not capture the nuances of your specific data. There is a need for a more tailored solution, one that constructs a detailed picture of each user journey by linking and understanding all available event data (including campaign parameters, device information, geotargeting, and other user signals). 
 
-Our proprietary model is designed to address this challenge. It learns from complete user journeys (where the channel is known) and uses that knowledge to predict the most likely channel for journeys with missing data. Through cross-validation, the model ensures that its predictions are both explainable and reliable, providing you with transparent insights that empower smarter, data-driven decisions and optimise your marketing investments.
+This model implementation is designed to address this challenge. It learns from complete user journeys (where the channel is known) and uses that knowledge to predict the most likely channel for journeys with missing data. Through cross-validation, the model ensures that its predictions are both explainable and reliable, providing you with transparent insights that empower smarter, data-driven decisions and optimise your marketing investments.
 
 
 ## Proprietary Model for Channel Imputation
@@ -18,12 +18,12 @@ Provides an end-to-end pipeline that uses event-level data from Google BigQuery 
 ### Overview
 
 **Data Ingestion:**  
+
 The process begins by authenticating with Google Cloud using a service account key and querying event-level data from BigQuery.
 
 **Data Preprocessing:**  
-First, conversion events (such as form submissions) are identified and marked as conversions. Next, user journeys are built by grouping events by user and sorting them by timestamp. The training data is then prepared by extracting aggregated features (by summing feature counts from the “middle” events of each journey) and sequential features (by preserving the order of events, which are padded or truncated to a fixed length). The dominant channel from each journey is used as the training label.
 
-**Model Building:**  
+User journeys are constructed by grouping events by user and sorting them chronologically by timestamp. The script extracts comprehensive features from every event (including all custom event parameters available) and aggregates these features. For each journey, aggregated features are computed by summing feature counts from the events, while sequential features preserve the order and granularity of events.
 
 **Model Building:**
 
