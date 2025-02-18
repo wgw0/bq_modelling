@@ -14,7 +14,7 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Dropout, LSTM, Masking, Concatenate
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping
 
 # -----------------------------------------------------------------------------
 # Configuration and Hyperparameters
@@ -41,7 +41,6 @@ MODEL_CHECKPOINT_PATH = os.path.join(model_dir, f"model_{unique_model_id}.h5")
 # -----------------------------------------------------------------------------
 # Logging Configuration
 # -----------------------------------------------------------------------------
-# Simplify logging output to just show messages for a cleaner terminal output.
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 # -----------------------------------------------------------------------------
@@ -217,18 +216,9 @@ def query_event_data(client):
         logging.error("Error executing BigQuery query.", exc_info=True)
         raise e
 
-def mark_conversion_events(df):
-    """Mark conversion events in the DataFrame."""
-    conversion_events = ['form_submit', 'form_submit_contact']
-    df['is_conversion'] = np.where(df['event_name'].isin(conversion_events), 1, 0)
-    logging.info("STEP 2: Marking conversion events")
-    logging.info(f"Total conversion events flagged: {df['is_conversion'].sum()}")
-    logging.info("=" * 30 + "\n")
-    return df
-
 def build_event_journeys(df):
     """Group events by user to form journeys."""
-    logging.info("STEP 3: Building event-level journeys for each user")
+    logging.info("STEP 2: Building event-level journeys for each user")
     journey_events = []
     for user, group in df.groupby('user_pseudo_id'):
         group = group.sort_values('event_timestamp')
@@ -291,7 +281,7 @@ def build_event_journeys(df):
 
 def prepare_training_data(user_journeys):
     """Prepare aggregated and sequential features along with labels for training."""
-    logging.info("STEP 4: Preparing training data for proprietary model")
+    logging.info("STEP 3: Preparing training data for proprietary model")
     X_agg_dicts = []  # Aggregated features per journey
     X_seq_dicts = []  # Sequence (list) of per-event feature dictionaries per journey
     y_labels = []     # Dominant channel label per journey
@@ -324,7 +314,7 @@ def prepare_training_data(user_journeys):
 
 def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
     """Vectorize aggregated and sequence features using DictVectorizer and pad sequences."""
-    logging.info("STEP 5: Vectorizing feature dictionaries")
+    logging.info("STEP 4: Vectorizing feature dictionaries")
     vec = DictVectorizer(sparse=False)
     all_event_dicts = []
     for seq in X_seq_dicts:
@@ -350,7 +340,7 @@ def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
 
 def encode_labels(y_labels):
     """Encode string labels into integers and then into one-hot vectors."""
-    logging.info("STEP 6: Encoding labels")
+    logging.info("STEP 5: Encoding labels")
     le = LabelEncoder()
     y_encoded = le.fit_transform(y_labels)
     num_classes = len(le.classes_)
@@ -361,7 +351,7 @@ def encode_labels(y_labels):
 
 def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate):
     """Build and compile the dual-input deep learning model."""
-    logging.info("STEP 8: Building dual-input deep learning model")
+    logging.info("STEP 7: Building dual-input deep learning model")
     # Aggregated features branch.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
     x_agg = Dense(64, activation='relu')(input_agg)
@@ -389,7 +379,7 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
 
 def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     """Predict and impute missing channels for journeys with missing values."""
-    logging.info("STEP 11: Imputing missing channels for journeys with missing values")
+    logging.info("STEP 10: Imputing missing channels for journeys with missing values")
     imputed_journeys_count = 0
     for user, events in user_journeys.items():
         if not any(is_missing(e.get('original_channel')) for e in events):
@@ -415,7 +405,7 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
         seq_features = np.expand_dims(seq_vec, axis=0)  # Shape: (1, max_seq_length, num_features)
         
         # Predict the dominant channel.
-        predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features})
+        predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features}, verbose=0)
         predicted_index = np.argmax(predicted_proba, axis=1)[0]
         predicted_channel = le.inverse_transform([predicted_index])[0]
         
@@ -434,7 +424,7 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
 
 def export_imputed_events(user_journeys):
     """Export imputed event-level data to a CSV file."""
-    logging.info("STEP 12: Preparing event-level data for export")
+    logging.info("STEP 11: Preparing event-level data for export")
     imputed_events = []
     for user, events in user_journeys.items():
         for e in events:
@@ -458,40 +448,36 @@ def main():
     # STEP 1: Query event-level data.
     df = query_event_data(client)
 
-    # STEP 2: Mark conversion events.
-    df = mark_conversion_events(df)
-
-    # STEP 3: Build event-level journeys.
+    # STEP 2: Build event-level journeys.
     user_journeys = build_event_journeys(df)
 
-    # STEP 4: Prepare training data for the proprietary model.
+    # STEP 3: Prepare training data for the proprietary model.
     X_agg_dicts, X_seq_dicts, y_labels = prepare_training_data(user_journeys)
 
-    # STEP 5: Vectorize feature dictionaries.
+    # STEP 4: Vectorize feature dictionaries.
     vec, X_agg, X_seq = vectorize_features(X_agg_dicts, X_seq_dicts, MAX_SEQ_LENGTH)
 
-    # STEP 6: Encode labels.
+    # STEP 5: Encode labels.
     le, y_categorical, num_classes = encode_labels(y_labels)
 
-    # STEP 7: Split data into training and validation sets.
+    # STEP 6: Split data into training and validation sets.
     X_agg_train, X_agg_val, X_seq_train, X_seq_val, y_train, y_val = train_test_split(
         X_agg, X_seq, y_categorical, test_size=0.2, random_state=RANDOM_STATE
     )
     logging.info("Training and validation data prepared.")
     logging.info("=" * 30 + "\n")
 
-    # STEP 8: Build the dual-input deep learning model.
+    # STEP 7: Build the dual-input deep learning model.
     model = build_model(input_dim=X_agg_train.shape[1],
                         seq_length=MAX_SEQ_LENGTH,
                         seq_features=X_seq_train.shape[2],
                         num_classes=num_classes,
                         learning_rate=LEARNING_RATE)
 
-    # STEP 9: Train the model with callbacks.
-    logging.info("STEP 9: Training the model")
+    # STEP 8: Train the model with EarlyStopping.
+    logging.info("STEP 8: Training the model")
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
-        ModelCheckpoint(MODEL_CHECKPOINT_PATH, monitor='val_loss', save_best_only=True)
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
     ]
     history = model.fit(
         {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
@@ -503,18 +489,23 @@ def main():
     )
     logging.info("=" * 30 + "\n")
 
-    # STEP 10: Evaluate the model.
+    # Save the final (best) model to a single file.
+    model.save(MODEL_CHECKPOINT_PATH)
+    logging.info(f"Model saved to '{MODEL_CHECKPOINT_PATH}'")
+    logging.info("=" * 30 + "\n")
+
+    # STEP 9: Evaluate the model.
     loss, accuracy = model.evaluate(
         {'aggregated_features': X_agg_val, 'sequence_features': X_seq_val},
         y_val
     )
-    logging.info(f"STEP 10: Validation Accuracy: {accuracy * 100:.2f}%")
+    logging.info(f"STEP 9: Validation Accuracy: {accuracy * 100:.2f}%")
     logging.info("=" * 30 + "\n")
 
-    # STEP 11: Predict and impute missing channels for incomplete journeys.
+    # STEP 10: Predict and impute missing channels for incomplete journeys.
     user_journeys = impute_missing_channels(user_journeys, vec, model, le, MAX_SEQ_LENGTH)
 
-    # STEP 12: Prepare event-level data for export.
+    # STEP 11: Prepare event-level data for export.
     export_imputed_events(user_journeys)
 
 if __name__ == "__main__":

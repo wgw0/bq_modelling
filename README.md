@@ -24,9 +24,13 @@ The process begins by authenticating with Google Cloud using a service account k
 First, conversion events (such as form submissions) are identified and marked as conversions. Next, user journeys are built by grouping events by user and sorting them by timestamp. The training data is then prepared by extracting aggregated features (by summing feature counts from the “middle” events of each journey) and sequential features (by preserving the order of events, which are padded or truncated to a fixed length). The dominant channel from each journey is used as the training label.
 
 **Model Building:**  
-The model uses a dual-input design to process two types of information from user journeys. One branch takes a summary vector of aggregated features, such as counts of events, and processes it with [dense layers](https://datascientest.com/en/dense-neural-networks-understanding-their-structure-and-function) to capture the overall characteristics of the journey. The other branch uses an [LSTM layer](https://en.wikipedia.org/wiki/Long_short-term_memory) to analyse the sequence of individual events, learning the order and timing of user interactions. These two streams are then merged and passed through additional dense layers, with a softmax output producing probabilities for each channel class. This combined approach leverages both the big picture and the fine details, resulting in more accurate channel predictions.
 
-This proprietary model offers a lot of deep 'understanding' based accuracy. Instead of solely relying on aggregated features, which condense a user's journey into a single summary vector, the model uses a dual-input architecture that processes two different types of data simultaneously. One branch of the model processes the aggregated journey features, capturing broad trends and overall patterns (such as the total counts of events and bucketed numerical values). The other branch uses an LSTM layer to analyse the sequence of individual events, capturing the order and timing of interactions, which provides detailed temporal context. By combining these two streams of information, the model is able to learn complex, non-linear relationships within the data, leading to higher predictive accuracy when imputing missing channel values.
+The model employs a dual-input architecture to simultaneously process two types of information from user journeys, achieving understanding-based accuracy in channel prediction.
+
+One branch condenses aggregated features, such as: event counts, bucketed numerical values, and overall trends, into a [summary vector](https://neptune.ai/blog/understanding-vectors-from-a-machine-learning-perspective) that is processed with [dense layers](https://datascientest.com/en/dense-neural-networks-understanding-their-structure-and-function) to capture the big picture. 
+
+In parallel, the other branch leverages an [LSTM layer](https://en.wikipedia.org/wiki/Long_short-term_memory) to analyse the sequence of individual events, capturing the order, timing, and detailed temporal context of user interactions. These two streams are merged and further processed through additional dense layers with a softmax output, enabling the model to learn complex, non-linear relationships and deliver more accurate channel predictions.
+
 
 **Training and Evaluation:**  
 The model is trained on complete journeys, those with all the necessary channel information. This is so that it learns from reliable, known data. During training, the dataset is split into training and validation sets, ensuring that the model’s performance is continuously evaluated on unseen data. The training process involves optimising the model's weights using the [Adam optimiser](https://machinelearningmastery.com/adam-optimization-algorithm-for-deep-learning/) and minimising the [categorical cross-entropy loss](https://www.v7labs.com/blog/cross-entropy-loss-guide) over 40 [epochs with a batch](https://machinelearningmastery.com/difference-between-a-batch-and-an-epoch/) size of 32. Throughout this process, key metrics such as accuracy are monitored, and the high validation accuracy indicates that the model is effectively learning the underlying patterns and relationships within the data. This rigorous evaluation provides confidence that the model will generalise well when applied to new, incomplete journeys.
@@ -36,19 +40,19 @@ Once the model is trained, it is used to predict missing channel values in journ
 
 ### Hyperparameters
 
-- MAX_SEQ_LENGTH (20):
+- MAX_SEQ_LENGTH:
 This defines the maximum number of events (the sequence length) considered in each user journey. Sequences shorter than this are padded, and longer sequences are truncated. Adjusting this value changes how much sequential information is fed into the model. This is done so that all sequences have a consistent shape before being fed into the model.
 
-- EPOCHS (40):
-The number of complete passes through the training data during model training. Increasing this number can allow the model more opportunities to learn, but may risk overfitting, whereas reducing it may lead to underfitting. *(Testing resulted in 40 as best match)*
+- EPOCHS:
+The number of complete passes through the training data during model training. Increasing this number can allow the model more opportunities to learn, but may risk overfitting, whereas reducing it may lead to underfitting.
 
-- BATCH_SIZE (32):
-The number of samples processed before the model's weights are updated. A larger batch size might lead to more stable gradient updates but requires more memory, while a smaller batch size can result in noisier updates and potentially slower convergence. *(32 is a default value but works well)*
+- BATCH_SIZE:
+The number of samples processed before the model's weights are updated. A larger batch size might lead to more stable gradient updates but requires more memory, while a smaller batch size can result in noisier updates and potentially slower convergence.
 
-- LEARNING_RATE (0.001):
-This is the step size used by the optimiser (Adam in this case) when updating the model’s weights. A higher learning rate can accelerate training but may overshoot optimal values, while a lower rate might yield a more precise convergence at the cost of slower training. *(0.001 is a common default for Adam optimiser)*
+- LEARNING_RATE:
+This is the step size used by the optimiser (Adam in this case) when updating the model’s weights. A higher learning rate can accelerate training but may overshoot optimal values, while a lower rate might yield a more precise convergence at the cost of slower training.
 
-- RANDOM_STATE (42):
+- RANDOM_STATE:
 A seed value used for random number generation to ensure reproducibility of the model training and data splitting. Changing this value will result in different random splits and model initialisations, which could affect performance outcomes.
 
 
