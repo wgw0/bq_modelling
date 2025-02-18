@@ -29,15 +29,15 @@ User journeys are constructed by grouping events by user and sorting them chrono
 
 The model employs a dual-input architecture to simultaneously process two types of information from user journeys, achieving understanding-based accuracy in channel prediction.
 
-One branch condenses aggregated features, such as event counts, bucketed numerical values, and overall trends, into a [summary vector](https://neptune.ai/blog/understanding-vectors-from-a-machine-learning-perspective) that is processed with **two dense layers** (the first with 128 units and the second with 64 units, each followed by [dropout](https://www.dremio.com/wiki/dropout-in-neural-networks/#:~:text=Dropout%20in%20Neural%20Networks%20operates,to%20generalize%20to%20new%20data.)) to capture the big picture.
+One branch condenses aggregated features, such as event counts, bucketed numerical values, and overall trends, into a [summary vector](https://neptune.ai/blog/understanding-vectors-from-a-machine-learning-perspective) that is processed with two [dense layers](https://datascientest.com/en/dense-neural-networks-understanding-their-structure-and-function) (the first with 128 [units](https://www.sciencedirect.com/topics/engineering/neural-unit) and the second with 64 units, each followed by [dropout](https://www.dremio.com/wiki/dropout-in-neural-networks/#:~:text=Dropout%20in%20Neural%20Networks%20operates,to%20generalize%20to%20new%20data.)) to capture the big picture.
 
-In parallel, the other branch leverages **two stacked LSTM layers** (the first with 128 units and the second with 64 units, with dropout applied after each) to analyse the sequence of individual events, capturing the order, timing, and detailed parameter data of user interactions. These two streams are merged and further processed through **two additional dense layers** (with 64 and 32 units, respectively, each followed by dropout) with a [softmax output](https://en.wikipedia.org/wiki/Softmax_function), enabling the model to learn complex, non-linear relationships and deliver more accurate channel predictions.
+In parallel, the other branch leverages two stacked [LSTM layers](https://machinelearningmastery.com/gentle-introduction-long-short-term-memory-networks-experts/) (the first with 128 units and the second with 64 units, with dropout applied after each) to analyse the sequence of individual events, capturing the order, timing, and detailed parameter data of user interactions. These two streams are merged and further processed through two additional dense layers (with 64 and 32 units, respectively, each followed by dropout) with a [softmax output](https://en.wikipedia.org/wiki/Softmax_function), enabling the model to learn complex, non-linear relationships and deliver more accurate channel predictions.
 
 
 **Training and Evaluation:**  
 The model is trained on complete journeys, those with all the necessary channel information. This is so that it learns from reliable, known data. During training, the dataset is split into training and validation sets (80:20), ensuring that the model’s performance is continuously evaluated on unseen data. The training process involves optimising the model's weights using the [Adam optimiser](https://machinelearningmastery.com/adam-optimization-algorithm-for-deep-learning/) and minimising the [categorical cross-entropy loss](https://www.v7labs.com/blog/cross-entropy-loss-guide) over 40 [epochs with a batch](https://machinelearningmastery.com/difference-between-a-batch-and-an-epoch/) size of 32. Throughout this process, key metrics such as accuracy are monitored, and the high validation accuracy indicates that the model is effectively learning the underlying patterns and relationships within the data. This rigorous evaluation provides confidence that the model will generalise well when applied to new, incomplete journeys.
 
-Overfitting occurs when a model learns not only the underlying patterns in the training data but also the noise, causing it to perform well on the training set while poorly generalising to unseen data.
+Overfitting occurs when a model learns not only the underlying patterns in the training data but also the noise, causing it to perform well on the training set while poorly generalising to unseen data. Something we aim to avoid, therefore we do not over set parameters (reason behind not setting units or batch size etc really high).
 
 **Model Overview Visualised:**
 
@@ -63,6 +63,8 @@ This is the step size used by the optimiser (Adam in this case) when updating th
 - RANDOM_STATE:
 A seed value used for random number generation to ensure reproducibility of the model training and data splitting. Changing this value will result in different random splits and model initialisations, which could affect performance outcomes.
 
+- TEST_SIZE: 
+The split of data that is kept away from the building to test the build against. This can be altered up or down based on the effectiveness of model building, and is worth considering to move up when the data set increases (currently at 20%).
 
 ## Local Setup and Running
 
