@@ -131,6 +131,31 @@ def extract_event_features(e):
     feat[f"ad_source_name:{e.get('ad_source_name') or 'unknown'}"] += 1
     feat[f"ad_unit_id:{e.get('ad_unit_id') or 'unknown'}"] += 1
 
+    # -------------------------------------------------------------------------
+    # Parse ALL custom event parameters (from 'all_params') if present.
+    # -------------------------------------------------------------------------
+    all_params = e.get('all_params', [])
+    if all_params is None:
+        all_params = []
+
+    for param in all_params:
+        param_key = param.get('param_key', 'unknown')
+        param_str_val = param.get('param_str_val')
+        param_int_val = param.get('param_int_val')
+        param_float_val = param.get('param_float_val')
+        param_double_val = param.get('param_double_val')
+
+        if param_str_val is not None:
+            feat[f"param:{param_key}:{param_str_val}"] += 1
+        elif param_int_val is not None:
+            feat[f"param:{param_key}:{param_int_val}"] += 1
+        elif param_float_val is not None:
+            feat[f"param:{param_key}:{param_float_val}"] += 1
+        elif param_double_val is not None:
+            feat[f"param:{param_key}:{param_double_val}"] += 1
+        else:
+            feat[f"param:{param_key}:unknown"] += 1
+
     return feat
 
 # -----------------------------------------------------------------------------
@@ -150,16 +175,12 @@ def setup_bigquery_client():
         raise e
 
 def query_event_data(client):
-    """Query event-level data from BigQuery."""
+    """Query event-level data from BigQuery, including all custom parameters."""
     query = f"""
     SELECT
       event_date,
       event_timestamp,
       event_name,
-      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1) AS campaign,
-      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1) AS campaign_medium,
-      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) AS campaign_source,
-      event_value_in_usd,
       user_id,
       user_pseudo_id,
       user_first_touch_timestamp,
@@ -198,7 +219,28 @@ def query_event_data(client):
       publisher.ad_revenue_in_usd,
       publisher.ad_format,
       publisher.ad_source_name,
-      publisher.ad_unit_id
+      publisher.ad_unit_id,
+
+      -- Example: pulling a specific param named 'value' if it exists
+      (SELECT value.float_value
+       FROM UNNEST(event_params)
+       WHERE key = 'value' LIMIT 1
+      ) AS event_value_in_usd,
+
+      -- Gather ALL event parameters in an array of structs.
+      (
+        SELECT ARRAY_AGG(
+          STRUCT(
+            ep.key AS param_key,
+            ep.value.string_value AS param_str_val,
+            ep.value.int_value AS param_int_val,
+            ep.value.float_value AS param_float_val,
+            ep.value.double_value AS param_double_val
+          )
+        )
+        FROM UNNEST(event_params) ep
+      ) AS all_params
+
     FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
     WHERE
       _TABLE_SUFFIX BETWEEN '{BQ_DATE_RANGE[0]}' AND '{BQ_DATE_RANGE[1]}'
@@ -230,9 +272,9 @@ def build_event_journeys(df):
                 'event_name': row['event_name'],
                 'original_channel': row['channel'],
                 'final_channel': row['channel'],
-                'campaign': row['campaign'],
-                'campaign_medium': row['campaign_medium'],
-                'campaign_source': row['campaign_source'],
+                'campaign': None,  # Deprecating in favor of all_params, but kept for compatibility
+                'campaign_medium': None,
+                'campaign_source': None,
                 'event_value_in_usd': row['event_value_in_usd'],
                 'user_id': row['user_id'],
                 'user_first_touch_timestamp': row['user_first_touch_timestamp'],
@@ -242,8 +284,9 @@ def build_event_journeys(df):
                 'device_os': row['device_os'],
                 'mobile_brand_name': row['mobile_brand_name'],
                 'mobile_model_name': row['mobile_model_name'],
-                'operating_system_version': row['operating_system_version'],
-                'language': row['language'],
+                'operating_system_version': row['device.operating_system_version']
+                if 'device.operating_system_version' in row else row['operating_system_version'],
+                'language': row['device.language'] if 'device.language' in row else row['language'],
                 'browser': row['browser'],
                 'browser_version': row['browser_version'],
                 'geo_country': row['geo_country'],
@@ -270,7 +313,8 @@ def build_event_journeys(df):
                 'ad_revenue_in_usd': row['ad_revenue_in_usd'],
                 'ad_format': row['ad_format'],
                 'ad_source_name': row['ad_source_name'],
-                'ad_unit_id': row['ad_unit_id']
+                'ad_unit_id': row['ad_unit_id'],
+                'all_params': row.get('all_params', [])
             })
     user_journeys = defaultdict(list)
     for event in journey_events:
@@ -383,7 +427,6 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
     logging.info("=" * 30 + "HERE" + "\n")
     return model
 
-
 def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     """Predict and impute missing channels for journeys with missing values."""
     logging.info("STEP 10: Imputing missing channels for journeys with missing values")
@@ -412,7 +455,10 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
         seq_features = np.expand_dims(seq_vec, axis=0)  # Shape: (1, max_seq_length, num_features)
         
         # Predict the dominant channel.
-        predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features}, verbose=0)
+        predicted_proba = model.predict(
+            {'aggregated_features': agg_features, 'sequence_features': seq_features},
+            verbose=0
+        )
         predicted_index = np.argmax(predicted_proba, axis=1)[0]
         predicted_channel = le.inverse_transform([predicted_index])[0]
         
@@ -475,11 +521,13 @@ def main():
     logging.info("=" * 30 + "\n")
 
     # STEP 7: Build the dual-input deep learning model.
-    model = build_model(input_dim=X_agg_train.shape[1],
-                        seq_length=MAX_SEQ_LENGTH,
-                        seq_features=X_seq_train.shape[2],
-                        num_classes=num_classes,
-                        learning_rate=LEARNING_RATE)
+    model = build_model(
+        input_dim=X_agg_train.shape[1],
+        seq_length=MAX_SEQ_LENGTH,
+        seq_features=X_seq_train.shape[2],
+        num_classes=num_classes,
+        learning_rate=LEARNING_RATE
+    )
 
     # STEP 8: Train the model with EarlyStopping.
     logging.info("STEP 8: Training the model")
