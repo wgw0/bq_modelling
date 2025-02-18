@@ -1,5 +1,4 @@
 import time
-
 import os
 import uuid
 import logging
@@ -272,7 +271,7 @@ def build_event_journeys(df):
                 'event_name': row['event_name'],
                 'original_channel': row['channel'],
                 'final_channel': row['channel'],
-                'campaign': None,  # Deprecating in favor of all_params, but kept for compatibility
+                'campaign': None,
                 'campaign_medium': None,
                 'campaign_source': None,
                 'event_value_in_usd': row['event_value_in_usd'],
