@@ -173,17 +173,13 @@ def setup_bigquery_client():
         raise e
 
 def query_event_data(client):
-    """Query event-level data from BigQuery, including all custom parameters."""
+    """Query event-level data from BigQuery."""
     query = f"""
     SELECT
       event_date,
       event_timestamp,
       event_name,
-      user_id,
       user_pseudo_id,
-      user_first_touch_timestamp,
-      user_ltv.revenue AS user_ltv_revenue,
-      user_ltv.currency AS user_ltv_currency,
       device.category AS device_category,
       device.operating_system AS device_os,
       device.mobile_brand_name,
@@ -272,10 +268,6 @@ def build_event_journeys(df):
                 'campaign_medium': None,
                 'campaign_source': None,
                 'event_value_in_usd': row['event_value_in_usd'],
-                'user_id': row['user_id'],
-                'user_first_touch_timestamp': row['user_first_touch_timestamp'],
-                'user_ltv_revenue': row['user_ltv_revenue'],
-                'user_ltv_currency': row['user_ltv_currency'],
                 'device_category': row['device_category'],
                 'device_os': row['device_os'],
                 'mobile_brand_name': row['mobile_brand_name'],
@@ -519,7 +511,7 @@ def main():
     # STEP 8: Train the model with EarlyStopping.
     logging.info("STEP 8: Training the model")
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True) # if there is no improvement in accuracy in 5 consecutive epochs, it stops early
+        EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True) # if there is no improvement in accuracy in 5 consecutive epochs, it stops early
     ]
     history = model.fit(
         {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
