@@ -1,21 +1,27 @@
-import time
+#!/usr/bin/env python
 import os
 import uuid
+import time
 import logging
+
 from collections import defaultdict, Counter
 import numpy as np
 import pandas as pd
+
 from google.oauth2 import service_account
 from google.cloud import bigquery
+
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
+
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Dropout, LSTM, Masking, Concatenate
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping
+
 from joblib import Parallel, delayed
 
 # -----------------------------------------------------------------------------
@@ -33,13 +39,14 @@ BQ_DATE_RANGE = ("20241001", "20250228")
 np.random.seed(RANDOM_STATE)
 tf.random.set_seed(RANDOM_STATE)
 
-# Generate a unique model ID using the current UUID generation method.
+# Generate a unique model ID and model checkpoint path.
 unique_model_id = uuid.uuid4().hex[:8]
 model_dir = "models"
 if not os.path.exists(model_dir):
     os.makedirs(model_dir)
 MODEL_CHECKPOINT_PATH = os.path.join(model_dir, f"model_{unique_model_id}.h5")
 
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 # -----------------------------------------------------------------------------
@@ -64,9 +71,6 @@ def bucket_numeric(value, bins=[0, 1, 10, 100, 1000, 10000]):
     return f"> {bins[-1]}"
 
 def extract_event_features(e):
-    """
-    Extract features from a single event dictionary using a Counter.
-    """
     feat = Counter()
     feat[f"event:{e.get('event_name') or 'unknown'}"] += 1
     feat[f"event_date:{e.get('event_date') or 'unknown'}"] += 1
@@ -130,35 +134,21 @@ def extract_event_features(e):
     feat[f"ad_source_name:{e.get('ad_source_name') or 'unknown'}"] += 1
     feat[f"ad_unit_id:{e.get('ad_unit_id') or 'unknown'}"] += 1
 
-    # -------------------------------------------------------------------------
-    # Parse ALL custom event parameters (from 'all_params') if present.
-    # -------------------------------------------------------------------------
+    # Process custom event parameters.
     all_params = e.get('all_params', [])
     if all_params is None:
         all_params = []
-
     for param in all_params:
-        param_key = param.get('param_key', 'unknown')
-        param_str_val = param.get('param_str_val')
-        param_int_val = param.get('param_int_val')
-        param_float_val = param.get('param_float_val')
-        param_double_val = param.get('param_double_val')
-
-        if param_str_val is not None:
-            feat[f"param:{param_key}:{param_str_val}"] += 1
-        elif param_int_val is not None:
-            feat[f"param:{param_key}:{param_int_val}"] += 1
-        elif param_float_val is not None:
-            feat[f"param:{param_key}:{param_float_val}"] += 1
-        elif param_double_val is not None:
-            feat[f"param:{param_key}:{param_double_val}"] += 1
-        else:
-            feat[f"param:{param_key}:unknown"] += 1
+        # Only include parameters that have a string or int value.
+        if param.get('param_str_val') is not None:
+            feat[f"param:{param.get('param_key')}:{param.get('param_str_val')}"] += 1
+        elif param.get('param_int_val') is not None:
+            feat[f"param:{param.get('param_key')}:{param.get('param_int_val')}"] += 1
 
     return feat
 
 # -----------------------------------------------------------------------------
-# Data Loading and Preprocessing Functions
+# BigQuery and Data Processing Functions
 # -----------------------------------------------------------------------------
 def setup_bigquery_client():
     """Set up and return a BigQuery client using the service account."""
@@ -174,14 +164,21 @@ def setup_bigquery_client():
         raise e
 
 def query_event_data(client):
-    """Query event-level data from BigQuery."""
-    # Note: We no longer filter out events with missing channel values.
+    """Query event-level data from BigQuery using the specified date range."""
     query = f"""
     SELECT
       event_date,
       event_timestamp,
       event_name,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1) AS campaign,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1) AS campaign_medium,
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) AS campaign_source,
+      event_value_in_usd,
+      user_id,
       user_pseudo_id,
+      user_first_touch_timestamp,
+      user_ltv.revenue AS user_ltv_revenue,
+      user_ltv.currency AS user_ltv_currency,
       device.category AS device_category,
       device.operating_system AS device_os,
       device.mobile_brand_name,
@@ -216,25 +213,16 @@ def query_event_data(client):
       publisher.ad_format,
       publisher.ad_source_name,
       publisher.ad_unit_id,
-      (SELECT value.float_value
-       FROM UNNEST(event_params)
-       WHERE key = 'value' LIMIT 1
-      ) AS event_value_in_usd,
-
-      -- Gather ALL event parameters in an array of structs.
       (
         SELECT ARRAY_AGG(
           STRUCT(
             ep.key AS param_key,
             ep.value.string_value AS param_str_val,
-            ep.value.int_value AS param_int_val,
-            ep.value.float_value AS param_float_val,
-            ep.value.double_value AS param_double_val
+            ep.value.int_value AS param_int_val
           )
         )
         FROM UNNEST(event_params) ep
       ) AS all_params
-
     FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
     WHERE
       _TABLE_SUFFIX BETWEEN '{BQ_DATE_RANGE[0]}' AND '{BQ_DATE_RANGE[1]}'
@@ -253,7 +241,7 @@ def query_event_data(client):
         raise e
 
 def process_user_group(user, group):
-    """Process one user group: sort and build the journey for that user."""
+    """Process a single user's events: sort and build the journey for that user."""
     group = group.sort_values('event_timestamp')
     journey = []
     for _, row in group.iterrows():
@@ -263,17 +251,20 @@ def process_user_group(user, group):
             'event_timestamp': row['event_timestamp'],
             'event_name': row['event_name'],
             'original_channel': row['channel'],
-            'final_channel': row['channel'],
-            'campaign': None,
-            'campaign_medium': None,
-            'campaign_source': None,
+            'final_channel': row['channel'],  # initially the same
+            'campaign': row['campaign'],
+            'campaign_medium': row['campaign_medium'],
+            'campaign_source': row['campaign_source'],
             'event_value_in_usd': row['event_value_in_usd'],
+            'user_id': row['user_id'],
+            'user_first_touch_timestamp': row['user_first_touch_timestamp'],
+            'user_ltv_revenue': row['user_ltv_revenue'],
+            'user_ltv_currency': row['user_ltv_currency'],
             'device_category': row['device_category'],
             'device_os': row['device_os'],
             'mobile_brand_name': row['mobile_brand_name'],
             'mobile_model_name': row['mobile_model_name'],
-            'operating_system_version': row['device.operating_system_version']
-                if 'device.operating_system_version' in row else row['operating_system_version'],
+            'operating_system_version': row['operating_system_version'],
             'language': row['device.language'] if 'device.language' in row else row['language'],
             'browser': row['browser'],
             'browser_version': row['browser_version'],
@@ -302,7 +293,7 @@ def process_user_group(user, group):
             'ad_format': row['ad_format'],
             'ad_source_name': row['ad_source_name'],
             'ad_unit_id': row['ad_unit_id'],
-            'all_params': row.get('all_params', [])
+            'all_params': row.get('all_params')
         })
     return user, journey
 
@@ -328,11 +319,13 @@ def prepare_training_data(user_journeys):
     complete_journey_count = 0
 
     for user, events in user_journeys.items():
-        # For training, we use only journeys that are complete (no missing channel)
+        # Skip journeys that are too short.
         if len(events) < 2:
             continue
+        # Only use journeys with complete channel info for training.
         if any(is_missing(e.get('original_channel')) for e in events):
             continue
+        # Use the "middle" events (if available) for feature aggregation.
         journey_middle = events[1:-1] if len(events) > 2 else events
         if not journey_middle:
             continue
@@ -342,6 +335,7 @@ def prepare_training_data(user_journeys):
             features = extract_event_features(e)
             agg_counter.update(features)
             seq_list.append(features)
+        # Use the dominant channel from the journey middle as the label.
         channels = [e.get('original_channel') for e in journey_middle]
         dominant_channel = Counter(channels).most_common(1)[0][0]
         X_agg_dicts.append(dict(agg_counter))
@@ -364,7 +358,7 @@ def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
     all_event_dicts.extend(X_agg_dicts)
     vec.fit(all_event_dicts)
 
-    # Convert aggregated features to dense
+    # Convert aggregated features to dense.
     X_agg_sparse = vec.transform(X_agg_dicts)
     X_agg = X_agg_sparse.toarray()
 
@@ -396,18 +390,18 @@ def encode_labels(y_labels):
     return le, y_categorical, num_classes
 
 def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate):
-    logging.info("Building a simplified dual-input deep learning model")
+    logging.info("STEP 6: Building dual-input deep learning model")
     
-    # Aggregated features branch with only one dense layer.
+    # Aggregated features branch.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
     x_agg = Dense(128, activation='relu')(input_agg)
     
-    # Sequential branch with only one LSTM layer.
+    # Sequence branch.
     input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
     x_seq = Masking(mask_value=0.0)(input_seq)
     x_seq = LSTM(128)(x_seq)
     
-    # Merge branches and directly output predictions with a single dense layer.
+    # Combine both branches.
     merged = Concatenate()([x_agg, x_seq])
     output = Dense(num_classes, activation='softmax')(merged)
     
@@ -421,10 +415,10 @@ def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate)
 
 def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     """Predict and impute missing channels for journeys with missing values."""
-    logging.info("STEP 10: Imputing missing channels for journeys with missing values")
+    logging.info("STEP 7: Imputing missing channels for journeys with missing values")
     imputed_journeys_count = 0
     for user, events in user_journeys.items():
-        # Process only journeys that have missing channel values
+        # Process only journeys that have missing channel values.
         if not any(is_missing(e.get('original_channel')) for e in events):
             continue
         journey_middle = events[1:-1] if len(events) > 2 else events
@@ -449,10 +443,7 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
         seq_features = np.expand_dims(seq_vec, axis=0)  # Shape: (1, max_seq_length, num_features)
         
         # Predict the dominant channel.
-        predicted_proba = model.predict(
-            {'aggregated_features': agg_features, 'sequence_features': seq_features},
-            verbose=0
-        )
+        predicted_proba = model.predict({'aggregated_features': agg_features, 'sequence_features': seq_features}, verbose=0)
         predicted_index = np.argmax(predicted_proba, axis=1)[0]
         predicted_channel = le.inverse_transform([predicted_index])[0]
         
@@ -471,13 +462,13 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
 
 def export_imputed_events(user_journeys):
     """Export imputed event-level data to a CSV file."""
-    logging.info("STEP 11: Preparing event-level data for export")
+    logging.info("STEP 8: Preparing event-level data for export")
     imputed_events = []
     for user, events in user_journeys.items():
         for e in events:
             imputed_events.append(e)
     imputed_df = pd.DataFrame(imputed_events)
-    # Retain only key columns.
+    # Retain only the key columns.
     imputed_df = imputed_df[['user_pseudo_id', 'event_timestamp', 'event_name', 'original_channel', 'final_channel']]
     unique_id = uuid.uuid4().hex[:8]
     filename = f"imputed_events_{unique_id}.csv"
@@ -496,13 +487,13 @@ def main():
     # STEP 1: Query event-level data.
     df = query_event_data(client)
 
-    # STEP 2: Build event-level journeys (using parallel processing).
+    # STEP 2: Build event-level journeys using parallel processing.
     user_journeys = build_event_journeys(df)
 
     # STEP 3: Prepare training data for the proprietary model.
     X_agg_dicts, X_seq_dicts, y_labels = prepare_training_data(user_journeys)
 
-    # STEP 4: Vectorize feature dictionaries using sparse representations.
+    # STEP 4: Vectorize feature dictionaries.
     vec, X_agg, X_seq = vectorize_features(X_agg_dicts, X_seq_dicts, MAX_SEQ_LENGTH)
 
     # STEP 5: Encode labels.
@@ -527,7 +518,7 @@ def main():
     # STEP 8: Train the model with EarlyStopping.
     logging.info("STEP 8: Training the model")
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
     ]
     history = model.fit(
         {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
@@ -539,7 +530,7 @@ def main():
     )
     logging.info("=" * 30 + "\n")
 
-    # Save the final (best) model to a single file.
+    # Save the model checkpoint.
     model.save(MODEL_CHECKPOINT_PATH)
     logging.info(f"Model saved to '{MODEL_CHECKPOINT_PATH}'")
     logging.info("=" * 30 + "\n")
@@ -552,21 +543,15 @@ def main():
     logging.info(f"STEP 9: Validation Accuracy: {accuracy * 100:.2f}%")
     logging.info("=" * 30 + "\n")
 
-    # STEP 10: Predict and impute missing channels for incomplete journeys.
+    # STEP 10: Impute missing channels for journeys with missing values.
     user_journeys = impute_missing_channels(user_journeys, vec, model, le, MAX_SEQ_LENGTH)
 
-    # STEP 11: Prepare event-level data for export.
+    # STEP 11: Export event-level data for imputed journeys.
     export_imputed_events(user_journeys)
+    
     end_time = time.time()
     elapsed_seconds = end_time - start_time
-    print(f"Approximate vCPU seconds: {elapsed_seconds:.2f}")
+    logging.info(f"Approximate vCPU seconds: {elapsed_seconds:.2f}")
 
 if __name__ == "__main__":
-    import cProfile, pstats
-    profiler = cProfile.Profile()
-    profiler.enable()
     main()
-    profiler.disable()
-    with open('profiling_output.txt', 'w') as f:
-        stats = pstats.Stats(profiler, stream=f).sort_stats("cumulative")
-        stats.print_stats()
