@@ -1,0 +1,7 @@
+numpy
+pandas
+scikit-learn
+tensorflow
+google-cloud-bigquery
+google-auth
+joblib
