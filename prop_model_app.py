@@ -22,10 +22,10 @@ from tensorflow.keras.callbacks import EarlyStopping
 # -----------------------------------------------------------------------------
 SERVICE_ACCOUNT_FILE = "service-account-key.json"
 MAX_SEQ_LENGTH = 20
-EPOCHS = 40
+EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-RANDOM_STATE = 42
+RANDOM_STATE = 12
 BQ_DATE_RANGE = ("20241001", "20250228")
 
 # Set random seeds for reproducibility.
@@ -390,30 +390,20 @@ def encode_labels(y_labels):
     return le, y_categorical, num_classes
 
 def build_model(input_dim, seq_length, seq_features, num_classes, learning_rate):
-    logging.info("Building a deeper dual-input deep learning model")
+    logging.info("Building a simplified dual-input deep learning model")
     
-    # Aggregated features branch with extra dense layers.
+    # Aggregated features branch with only one dense layer.
     input_agg = Input(shape=(input_dim,), name='aggregated_features')
     x_agg = Dense(128, activation='relu')(input_agg)
-    x_agg = Dropout(0.5)(x_agg)
-    x_agg = Dense(64, activation='relu')(x_agg)
-    x_agg = Dropout(0.5)(x_agg)
     
-    # Sequential branch with stacked LSTM layers.
+    # Sequential branch with only one LSTM layer.
     input_seq = Input(shape=(seq_length, seq_features), name='sequence_features')
     x_seq = Masking(mask_value=0.0)(input_seq)
-    x_seq = LSTM(128, return_sequences=True)(x_seq)
-    x_seq = Dropout(0.5)(x_seq)
-    x_seq = LSTM(64)(x_seq)
-    x_seq = Dropout(0.5)(x_seq)
+    x_seq = LSTM(128)(x_seq)
     
-    # Merge branches and add further dense layers.
+    # Merge branches and directly output predictions with a single dense layer.
     merged = Concatenate()([x_agg, x_seq])
-    x = Dense(64, activation='relu')(merged)
-    x = Dropout(0.5)(x)
-    x = Dense(32, activation='relu')(x)
-    x = Dropout(0.5)(x)
-    output = Dense(num_classes, activation='softmax')(x)
+    output = Dense(num_classes, activation='softmax')(merged)
     
     model = Model(inputs=[input_agg, input_seq], outputs=output)
     model.compile(optimizer=Adam(learning_rate=learning_rate),
@@ -529,7 +519,7 @@ def main():
     # STEP 8: Train the model with EarlyStopping.
     logging.info("STEP 8: Training the model")
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True) # if there is no improvement in accuracy in 5 consecutive epochs, it stops early
     ]
     history = model.fit(
         {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
