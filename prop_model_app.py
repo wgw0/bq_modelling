@@ -550,8 +550,7 @@ def main():
     export_imputed_events(user_journeys)
     
     end_time = time.time()
-    elapsed_seconds = end_time - start_time
-    logging.info(f"Approximate vCPU seconds: {elapsed_seconds:.2f}")
+    logging.info(f"Approximate vCPU seconds: {end_time - start_time:.2f}")
 
 if __name__ == "__main__":
     main()
