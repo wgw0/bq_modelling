@@ -16,6 +16,7 @@ from tensorflow.keras.layers import Input, Dense, Dropout, LSTM, Masking, Concat
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping
+from joblib import Parallel, delayed
 
 # -----------------------------------------------------------------------------
 # Configuration and Hyperparameters
@@ -174,6 +175,7 @@ def setup_bigquery_client():
 
 def query_event_data(client):
     """Query event-level data from BigQuery."""
+    # Note: We no longer filter out events with missing channel values.
     query = f"""
     SELECT
       event_date,
@@ -250,63 +252,69 @@ def query_event_data(client):
         logging.error("Error executing BigQuery query.", exc_info=True)
         raise e
 
-def build_event_journeys(df):
-    """Group events by user to form journeys."""
-    logging.info("STEP 2: Building event-level journeys for each user")
-    journey_events = []
-    for user, group in df.groupby('user_pseudo_id'):
-        group = group.sort_values('event_timestamp')
-        for _, row in group.iterrows():
-            journey_events.append({
-                'user_pseudo_id': row['user_pseudo_id'],
-                'event_date': row['event_date'],
-                'event_timestamp': row['event_timestamp'],
-                'event_name': row['event_name'],
-                'original_channel': row['channel'],
-                'final_channel': row['channel'],
-                'campaign': None,
-                'campaign_medium': None,
-                'campaign_source': None,
-                'event_value_in_usd': row['event_value_in_usd'],
-                'device_category': row['device_category'],
-                'device_os': row['device_os'],
-                'mobile_brand_name': row['mobile_brand_name'],
-                'mobile_model_name': row['mobile_model_name'],
-                'operating_system_version': row['device.operating_system_version']
+def process_user_group(user, group):
+    """Process one user group: sort and build the journey for that user."""
+    group = group.sort_values('event_timestamp')
+    journey = []
+    for _, row in group.iterrows():
+        journey.append({
+            'user_pseudo_id': row['user_pseudo_id'],
+            'event_date': row['event_date'],
+            'event_timestamp': row['event_timestamp'],
+            'event_name': row['event_name'],
+            'original_channel': row['channel'],
+            'final_channel': row['channel'],
+            'campaign': None,
+            'campaign_medium': None,
+            'campaign_source': None,
+            'event_value_in_usd': row['event_value_in_usd'],
+            'device_category': row['device_category'],
+            'device_os': row['device_os'],
+            'mobile_brand_name': row['mobile_brand_name'],
+            'mobile_model_name': row['mobile_model_name'],
+            'operating_system_version': row['device.operating_system_version']
                 if 'device.operating_system_version' in row else row['operating_system_version'],
-                'language': row['device.language'] if 'device.language' in row else row['language'],
-                'browser': row['browser'],
-                'browser_version': row['browser_version'],
-                'geo_country': row['geo_country'],
-                'geo_city': row['geo_city'],
-                'geo_continent': row['geo_continent'],
-                'geo_region': row['geo_region'],
-                'geo_sub_continent': row['geo_sub_continent'],
-                'geo_metro': row['geo_metro'],
-                'app_id': row['app_id'],
-                'app_version': row['app_version'],
-                'install_store': row['install_store'],
-                'firebase_app_id': row['firebase_app_id'],
-                'install_source': row['install_source'],
-                'traffic_source_name': row['traffic_source_name'],
-                'traffic_source_medium': row['traffic_source_medium'],
-                'traffic_source_source': row['traffic_source_source'],
-                'platform': row['platform'],
-                'purchase_revenue_in_usd': row['purchase_revenue_in_usd'],
-                'manual_campaign_id': row['manual_campaign_id'],
-                'manual_campaign_name': row['manual_campaign_name'],
-                'manual_source': row['manual_source'],
-                'manual_medium': row['manual_medium'],
-                'is_active_user': row['is_active_user'],
-                'ad_revenue_in_usd': row['ad_revenue_in_usd'],
-                'ad_format': row['ad_format'],
-                'ad_source_name': row['ad_source_name'],
-                'ad_unit_id': row['ad_unit_id'],
-                'all_params': row.get('all_params', [])
-            })
+            'language': row['device.language'] if 'device.language' in row else row['language'],
+            'browser': row['browser'],
+            'browser_version': row['browser_version'],
+            'geo_country': row['geo_country'],
+            'geo_city': row['geo_city'],
+            'geo_continent': row['geo_continent'],
+            'geo_region': row['geo_region'],
+            'geo_sub_continent': row['geo_sub_continent'],
+            'geo_metro': row['geo_metro'],
+            'app_id': row['app_id'],
+            'app_version': row['app_version'],
+            'install_store': row['install_store'],
+            'firebase_app_id': row['firebase_app_id'],
+            'install_source': row['install_source'],
+            'traffic_source_name': row['traffic_source_name'],
+            'traffic_source_medium': row['traffic_source_medium'],
+            'traffic_source_source': row['traffic_source_source'],
+            'platform': row['platform'],
+            'purchase_revenue_in_usd': row['purchase_revenue_in_usd'],
+            'manual_campaign_id': row['manual_campaign_id'],
+            'manual_campaign_name': row['manual_campaign_name'],
+            'manual_source': row['manual_source'],
+            'manual_medium': row['manual_medium'],
+            'is_active_user': row['is_active_user'],
+            'ad_revenue_in_usd': row['ad_revenue_in_usd'],
+            'ad_format': row['ad_format'],
+            'ad_source_name': row['ad_source_name'],
+            'ad_unit_id': row['ad_unit_id'],
+            'all_params': row.get('all_params', [])
+        })
+    return user, journey
+
+def build_event_journeys(df):
+    """Group events by user to form journeys using parallel processing."""
+    logging.info("STEP 2: Building event-level journeys for each user")
+    results = Parallel(n_jobs=-1, backend="multiprocessing")(
+        delayed(process_user_group)(user, group) for user, group in df.groupby('user_pseudo_id')
+    )
     user_journeys = defaultdict(list)
-    for event in journey_events:
-        user_journeys[event['user_pseudo_id']].append(event)
+    for user, journey in results:
+        user_journeys[user] = journey
     logging.info(f"Constructed journeys for {len(user_journeys)} users.")
     logging.info("=" * 30 + "\n")
     return user_journeys
@@ -320,6 +328,7 @@ def prepare_training_data(user_journeys):
     complete_journey_count = 0
 
     for user, events in user_journeys.items():
+        # For training, we use only journeys that are complete (no missing channel)
         if len(events) < 2:
             continue
         if any(is_missing(e.get('original_channel')) for e in events):
@@ -345,19 +354,24 @@ def prepare_training_data(user_journeys):
     return X_agg_dicts, X_seq_dicts, y_labels
 
 def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
-    """Vectorize aggregated and sequence features using DictVectorizer and pad sequences. Turning into data structures, basically."""
+    """Vectorize aggregated and sequence features using DictVectorizer (sparse mode)
+    and pad sequences. Convert sparse matrices to dense arrays when needed."""
     logging.info("STEP 4: Vectorizing feature dictionaries")
-    vec = DictVectorizer(sparse=False)
+    vec = DictVectorizer(sparse=True)
     all_event_dicts = []
     for seq in X_seq_dicts:
         all_event_dicts.extend(seq)
     all_event_dicts.extend(X_agg_dicts)
     vec.fit(all_event_dicts)
 
-    X_agg = vec.transform(X_agg_dicts)
+    # Convert aggregated features to dense
+    X_agg_sparse = vec.transform(X_agg_dicts)
+    X_agg = X_agg_sparse.toarray()
+
     X_seq = []
     for seq in X_seq_dicts:
-        seq_vec = vec.transform(seq)
+        seq_sparse = vec.transform(seq)
+        seq_vec = seq_sparse.toarray()
         if seq_vec.shape[0] < max_seq_length:
             pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
             seq_vec = np.vstack([seq_vec, pad])
@@ -410,6 +424,7 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     logging.info("STEP 10: Imputing missing channels for journeys with missing values")
     imputed_journeys_count = 0
     for user, events in user_journeys.items():
+        # Process only journeys that have missing channel values
         if not any(is_missing(e.get('original_channel')) for e in events):
             continue
         journey_middle = events[1:-1] if len(events) > 2 else events
@@ -422,9 +437,10 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
             agg_counter.update(features)
             seq_list.append(features)
         # Prepare aggregated feature vector.
-        agg_features = vec.transform([dict(agg_counter)])
+        agg_features = vec.transform([dict(agg_counter)]).toarray()
         # Prepare sequence feature vector (pad/truncate).
-        seq_vec = vec.transform(seq_list)
+        seq_sparse = vec.transform(seq_list)
+        seq_vec = seq_sparse.toarray()
         if seq_vec.shape[0] < max_seq_length:
             pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
             seq_vec = np.vstack([seq_vec, pad])
@@ -480,13 +496,13 @@ def main():
     # STEP 1: Query event-level data.
     df = query_event_data(client)
 
-    # STEP 2: Build event-level journeys.
+    # STEP 2: Build event-level journeys (using parallel processing).
     user_journeys = build_event_journeys(df)
 
     # STEP 3: Prepare training data for the proprietary model.
     X_agg_dicts, X_seq_dicts, y_labels = prepare_training_data(user_journeys)
 
-    # STEP 4: Vectorize feature dictionaries.
+    # STEP 4: Vectorize feature dictionaries using sparse representations.
     vec, X_agg, X_seq = vectorize_features(X_agg_dicts, X_seq_dicts, MAX_SEQ_LENGTH)
 
     # STEP 5: Encode labels.
@@ -511,7 +527,7 @@ def main():
     # STEP 8: Train the model with EarlyStopping.
     logging.info("STEP 8: Training the model")
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True) # if there is no improvement in accuracy in 5 consecutive epochs, it stops early
+        EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
     ]
     history = model.fit(
         {'aggregated_features': X_agg_train, 'sequence_features': X_seq_train},
@@ -546,4 +562,11 @@ def main():
     print(f"Approximate vCPU seconds: {elapsed_seconds:.2f}")
 
 if __name__ == "__main__":
+    import cProfile, pstats
+    profiler = cProfile.Profile()
+    profiler.enable()
     main()
+    profiler.disable()
+    with open('profiling_output.txt', 'w') as f:
+        stats = pstats.Stats(profiler, stream=f).sort_stats("cumulative")
+        stats.print_stats()
