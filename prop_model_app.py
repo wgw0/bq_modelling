@@ -1,4 +1,4 @@
-# Dual Input Deep Learning Model for Proprietary Channel Prediction
+#!/usr/bin/env python
 import os
 import uuid
 import time
@@ -73,7 +73,8 @@ def bucket_numeric(value, bins=[0, 1, 10, 100, 1000, 10000]):
 def extract_event_features(e):
     """
     Extract features from a single event dictionary using a Counter.
-    Note: This version does not process extra custom event parameters.
+    In addition to the standard features, this version processes custom event
+    parameters by including those with string_value or int_value.
     """
     feat = Counter()
     feat[f"event:{e.get('event_name') or 'unknown'}"] += 1
@@ -137,6 +138,17 @@ def extract_event_features(e):
     feat[f"ad_format:{e.get('ad_format') or 'unknown'}"] += 1
     feat[f"ad_source_name:{e.get('ad_source_name') or 'unknown'}"] += 1
     feat[f"ad_unit_id:{e.get('ad_unit_id') or 'unknown'}"] += 1
+
+    # Process custom event parameters.
+    all_params = e.get('all_params', [])
+    if all_params is None:
+        all_params = []
+    for param in all_params:
+        # Only include parameters that have a string or int value.
+        if param.get('param_str_val') is not None:
+            feat[f"param:{param.get('param_key')}:{param.get('param_str_val')}"] += 1
+        elif param.get('param_int_val') is not None:
+            feat[f"param:{param.get('param_key')}:{param.get('param_int_val')}"] += 1
 
     return feat
 
@@ -205,7 +217,17 @@ def query_event_data(client):
       publisher.ad_revenue_in_usd,
       publisher.ad_format,
       publisher.ad_source_name,
-      publisher.ad_unit_id
+      publisher.ad_unit_id,
+      (
+        SELECT ARRAY_AGG(
+          STRUCT(
+            ep.key AS param_key,
+            ep.value.string_value AS param_str_val,
+            ep.value.int_value AS param_int_val
+          )
+        )
+        FROM UNNEST(event_params) ep
+      ) AS all_params
     FROM `gtm-5vcmpn9-ntzmm.analytics_345697125.events_*`
     WHERE
       _TABLE_SUFFIX BETWEEN '{BQ_DATE_RANGE[0]}' AND '{BQ_DATE_RANGE[1]}'
@@ -275,7 +297,8 @@ def process_user_group(user, group):
             'ad_revenue_in_usd': row['ad_revenue_in_usd'],
             'ad_format': row['ad_format'],
             'ad_source_name': row['ad_source_name'],
-            'ad_unit_id': row['ad_unit_id']
+            'ad_unit_id': row['ad_unit_id'],
+            'all_params': row.get('all_params')
         })
     return user, journey
 
