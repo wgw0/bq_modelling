@@ -39,9 +39,6 @@ if not os.path.exists(model_dir):
     os.makedirs(model_dir)
 MODEL_CHECKPOINT_PATH = os.path.join(model_dir, f"model_{unique_model_id}.h5")
 
-# -----------------------------------------------------------------------------
-# Logging Configuration
-# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 # -----------------------------------------------------------------------------
