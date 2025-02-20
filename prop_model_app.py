@@ -71,11 +71,6 @@ def bucket_numeric(value, bins=[0, 1, 10, 100, 1000, 10000]):
     return f"> {bins[-1]}"
 
 def extract_event_features(e):
-    """
-    Extract features from a single event dictionary using a Counter.
-    In addition to the standard features, this version processes custom event
-    parameters by including those with string_value or int_value.
-    """
     feat = Counter()
     feat[f"event:{e.get('event_name') or 'unknown'}"] += 1
     feat[f"event_date:{e.get('event_date') or 'unknown'}"] += 1
