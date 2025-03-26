@@ -357,19 +357,19 @@ def vectorize_features(X_agg_dicts, X_seq_dicts, max_seq_length):
     vec.fit(all_event_dicts)
 
     X_agg_sparse = vec.transform(X_agg_dicts)
-    X_agg = X_agg_sparse.toarray()
+    X_agg = X_agg_sparse.toarray().astype(np.float32)  # Convert to float32
 
     X_seq = []
     for seq in X_seq_dicts:
         seq_sparse = vec.transform(seq)
-        seq_vec = seq_sparse.toarray()
+        seq_vec = seq_sparse.toarray().astype(np.float32)  # Convert to float32
         if seq_vec.shape[0] < max_seq_length:
-            pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]))
+            pad = np.zeros((max_seq_length - seq_vec.shape[0], seq_vec.shape[1]), dtype=np.float32)  # Use float32
             seq_vec = np.vstack([seq_vec, pad])
         else:
             seq_vec = seq_vec[:max_seq_length, :]
         X_seq.append(seq_vec)
-    X_seq = np.array(X_seq)
+    X_seq = np.array(X_seq, dtype=np.float32)  # Use float32
     logging.info(f"Aggregated feature shape: {X_agg.shape}")
     logging.info(f"Sequence feature shape: {X_seq.shape}")
     logging.info("=" * 30 + "\n")
