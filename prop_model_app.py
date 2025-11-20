@@ -34,7 +34,7 @@ EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 RANDOM_STATE = 12
-BQ_DATE_RANGE = ("20241001", "20250228")
+BQ_DATE_RANGE = ("20241001", "20251115")
 
 # --- [AMENDMENT: LEAKAGE PROTECTION] ---
 # Define keys that directly reveal marketing attribution or act as unique identifiers
@@ -225,7 +225,9 @@ def setup_bigquery_client():
         raise e
 
 def query_event_data(client):
-    """Query event-level data from BigQuery using the specified date range."""
+    """
+    Query event-level data from BigQuery with a progress log.
+    """
     query = f"""
     SELECT
       event_date,
@@ -274,8 +276,28 @@ def query_event_data(client):
     """
     try:
         logging.info("STEP 1: Querying event-level data from BigQuery")
-        logging.info("Running query...")
-        df = client.query(query).to_dataframe()
+        logging.info("Initiating query job...")
+        
+        # Start the job asynchronously
+        query_job = client.query(query)
+        
+        # Poll the job while it is running
+        while not query_job.done():
+            # Reload the job to get the latest status
+            query_job.reload() 
+            
+            # Optional: Print bytes processed if available (shows data is moving)
+            bytes_processed = query_job.total_bytes_processed
+            if bytes_processed:
+                mb_processed = bytes_processed / 1024 / 1024
+                logging.info(f"Query running... {mb_processed:.2f} MB processed so far.")
+            else:
+                logging.info("Query running... (preparing stage)")
+                
+            time.sleep(5) # Check every 5 seconds
+
+        logging.info("Query complete. Downloading results to DataFrame...")
+        df = query_job.to_dataframe()
         logging.info(f"Data retrieved: {len(df)} rows.")
         logging.info("=" * 30 + "\n")
         return df
