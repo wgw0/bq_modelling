@@ -1,18 +1,4 @@
 #!/usr/bin/env python
-"""
-Marketing Channel Attribution Imputation Pipeline (Production)
-
-Trains a dual-input deep learning model on GA4 event data to predict marketing
-channel attribution, then imputes missing channel labels per-event.
-
-Addresses:
-- Per-event imputation (not per-user blanket fill)
-- Leakage-safe feature engineering (event_name bucketed, no raw dates)
-- Class-balanced training with stratified splits
-- Persisted vectorizer, encoder, and config alongside model artifacts
-- Memory-efficient BigQuery streaming and tf.data pipeline
-- Windows-safe parallelism (loky backend)
-"""
 
 import os
 import sys
@@ -29,9 +15,8 @@ import pandas as pd
 from google.oauth2 import service_account
 from google.cloud import bigquery
 
-from sklearn.feature_extraction import DictVectorizer
+from sklearn.feature_extraction import FeatureHasher
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
 import tensorflow as tf
@@ -51,17 +36,22 @@ from joblib import Parallel, delayed
 # -----------------------------------------------------------------------------
 SERVICE_ACCOUNT_FILE = "service-account-key.json"
 MAX_SEQ_LENGTH = 20
-EPOCHS = 30
+EPOCHS = 15
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
 RANDOM_STATE = 12
-BQ_DATE_RANGE = ("20250101", "20261231")
+BQ_DATE_RANGE = ("20250701", "20260131")
+TIME_SPLIT_FRACTION = 0.8
 
 # BigQuery chunked download page size (rows per page, keeps memory bounded)
 BQ_PAGE_SIZE = 100_000
 
 # Inference batch size for imputation (controls peak memory during predict)
 IMPUTATION_BATCH_SIZE = 512
+
+# Fixed feature dimension via hashing — bounds memory regardless of vocabulary.
+# Higher = more discriminative power but more RAM.
+FEATURE_DIM = 4096
 
 # Define keys that directly reveal marketing attribution or act as unique
 # identifiers which would cause the model to "cheat" rather than learn behavior.
@@ -292,8 +282,10 @@ def _build_tf_dataset(X_agg_sparse, X_seq_sparse_list, y_categorical,
     )
 
     if shuffle:
+        # Keep buffer small relative to feature_dim to stay within RAM.
+        # At FEATURE_DIM=4096, each sample ≈ 330 KB, so 2048 buffer ≈ 660 MB.
         ds = ds.shuffle(
-            buffer_size=min(n_samples, 10_000), seed=RANDOM_STATE
+            buffer_size=min(n_samples, 2048), seed=RANDOM_STATE
         )
 
     ds = (
@@ -411,15 +403,16 @@ def query_event_data(client):
     page_count = 0
     rows_so_far = 0
     for page in query_job.result(page_size=BQ_PAGE_SIZE).pages:
-        page_df = page.to_dataframe()
-        frames.append(page_df)
-        page_count += 1
-        rows_so_far += len(page_df)
-        if page_count % 5 == 0:
-            logger.info(
-                "  Downloaded %s rows (%d pages)...",
-                f"{rows_so_far:,}", page_count,
-            )
+        page_rows = [dict(row) for row in page]
+        if page_rows:
+            frames.append(pd.DataFrame(page_rows))
+            page_count += 1
+            rows_so_far += len(page_rows)
+            if page_count % 5 == 0:
+                logger.info(
+                    "  Downloaded %s rows (%d pages)...",
+                    f"{rows_so_far:,}", page_count,
+                )
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     del frames  # free intermediate page memory
@@ -510,6 +503,7 @@ def prepare_training_data(user_journeys):
     X_agg_dicts = []
     X_seq_dicts = []
     y_labels = []
+    sample_meta = []
     total_events_used = 0
 
     for user, events in user_journeys.items():
@@ -538,6 +532,10 @@ def prepare_training_data(user_journeys):
             X_agg_dicts.append(dict(agg_counter))
             X_seq_dicts.append(seq_list)
             y_labels.append(channel)
+            sample_meta.append({
+                'user_pseudo_id': user,
+                'event_timestamp': e.get('event_timestamp'),
+            })
             total_events_used += 1
 
     logger.info(
@@ -549,23 +547,47 @@ def prepare_training_data(user_journeys):
             "No training samples found — all channels may be missing."
         )
     logger.info("=" * 50)
-    return X_agg_dicts, X_seq_dicts, y_labels
+    return X_agg_dicts, X_seq_dicts, y_labels, sample_meta
+
+
+def split_time_then_user_holdout(sample_meta, time_fraction):
+    """
+    Time-based split first, then a user-holdout validation subset.
+
+    - Train: events with timestamps <= cutoff
+    - Time-based validation: events with timestamps > cutoff
+    - User-holdout validation: time-based validation events where the user
+      was never seen in training
+    """
+    timestamps = np.array(
+        [m.get('event_timestamp') for m in sample_meta], dtype=np.float64
+    )
+    cutoff = np.quantile(timestamps, time_fraction)
+
+    idx_train = np.where(timestamps <= cutoff)[0]
+    idx_val_time = np.where(timestamps > cutoff)[0]
+
+    train_users = {
+        sample_meta[i].get('user_pseudo_id') for i in idx_train
+    }
+    idx_val_user = [
+        i for i in idx_val_time
+        if sample_meta[i].get('user_pseudo_id') not in train_users
+    ]
+
+    return idx_train, idx_val_time, np.array(idx_val_user, dtype=int), cutoff
 
 
 def vectorize_data_sparse(X_agg_dicts, X_seq_dicts):
     """
-    Fit a DictVectorizer on the full vocabulary and convert data to
-    sparse CSR matrices for memory-efficient storage and slicing.
+    Hash feature dicts into a fixed-width sparse representation using
+    FeatureHasher.  Unlike DictVectorizer the output dimension is bounded
+    by FEATURE_DIM regardless of how many unique features appear in the
+    data, keeping memory usage predictable at scale.
     """
-    logger.info("STEP 5: Vectorizing data to sparse matrices")
-    vec = DictVectorizer(sparse=True)
-
-    # Fit on all unique dicts (agg + individual event dicts from sequences)
-    all_event_dicts = list(X_agg_dicts)
-    for seq in X_seq_dicts:
-        all_event_dicts.extend(seq)
-    vec.fit(all_event_dicts)
-    del all_event_dicts  # free temp list
+    logger.info("STEP 5: Hashing features to %d-dim sparse matrices", FEATURE_DIM)
+    vec = FeatureHasher(n_features=FEATURE_DIM, input_type='dict')
+    # FeatureHasher is stateless — no fit() step required.
 
     # Transform aggregated data → single CSR matrix
     X_agg_sparse = vec.transform(X_agg_dicts)
@@ -578,7 +600,7 @@ def vectorize_data_sparse(X_agg_dicts, X_seq_dicts):
         else:
             X_seq_sparse_list.append(vec.transform(seq))
 
-    logger.info("Vocabulary size: %s", f"{len(vec.feature_names_):,}")
+    logger.info("Feature dimension (hashed): %s", f"{FEATURE_DIM:,}")
     logger.info("=" * 50)
     return vec, X_agg_sparse, X_seq_sparse_list
 
@@ -657,7 +679,7 @@ def impute_missing_channels(user_journeys, vec, model, le, max_seq_length):
     for that specific position in the journey.
     """
     logger.info("STEP 10: Imputing missing channels (per-event)")
-    feature_dim = len(vec.feature_names_)
+    feature_dim = vec.n_features
     imputed_event_count = 0
 
     # Collect all (user, event_idx) pairs that need imputation
@@ -826,7 +848,9 @@ def main():
     # ------------------------------------------------------------------
     # STEP 4: Prepare per-event training data
     # ------------------------------------------------------------------
-    X_agg_dicts, X_seq_dicts, y_labels = prepare_training_data(user_journeys)
+    X_agg_dicts, X_seq_dicts, y_labels, sample_meta = prepare_training_data(
+        user_journeys
+    )
 
     # ------------------------------------------------------------------
     # STEP 5: Vectorize
@@ -842,16 +866,26 @@ def main():
     le, y_categorical, num_classes, class_weight_dict = encode_labels(y_labels)
 
     # ------------------------------------------------------------------
-    # Stratified train / validation split
+    # Time-based split with user-holdout validation subset
     # ------------------------------------------------------------------
-    logger.info("STEP 6b: Stratified train/validation split")
-    y_int = np.argmax(y_categorical, axis=1)
-    indices = np.arange(len(y_categorical))
-    idx_train, idx_val = train_test_split(
-        indices,
-        test_size=0.2,
-        random_state=RANDOM_STATE,
-        stratify=y_int,
+    logger.info("STEP 6b: Time-based split + user-holdout validation")
+    idx_train, idx_val_time, idx_val_user, cutoff_ts = (
+        split_time_then_user_holdout(sample_meta, TIME_SPLIT_FRACTION)
+    )
+    train_users = {
+        sample_meta[i].get('user_pseudo_id') for i in idx_train
+    }
+    val_time_users = {
+        sample_meta[i].get('user_pseudo_id') for i in idx_val_time
+    }
+    overlap_users = train_users.intersection(val_time_users)
+    logger.info(
+        "Time split cutoff (unix micros): %s", f"{int(cutoff_ts):,}"
+    )
+    logger.info(
+        "Train users: %s  |  Val-time users: %s  |  Overlap users: %s",
+        f"{len(train_users):,}", f"{len(val_time_users):,}",
+        f"{len(overlap_users):,}",
     )
 
     def _subset_sparse(matrix, idxs):
@@ -864,21 +898,30 @@ def main():
     X_seq_train = _subset_list(X_seq_sparse_list, idx_train)
     y_train = y_categorical[idx_train]
 
-    X_agg_val = _subset_sparse(X_agg_sparse, idx_val)
-    X_seq_val = _subset_list(X_seq_sparse_list, idx_val)
-    y_val = y_categorical[idx_val]
+    X_agg_val_time = _subset_sparse(X_agg_sparse, idx_val_time)
+    X_seq_val_time = _subset_list(X_seq_sparse_list, idx_val_time)
+    y_val_time = y_categorical[idx_val_time]
+
+    X_agg_val_user = _subset_sparse(X_agg_sparse, idx_val_user)
+    X_seq_val_user = _subset_list(X_seq_sparse_list, idx_val_user)
+    y_val_user = y_categorical[idx_val_user]
 
     del X_agg_sparse, X_seq_sparse_list  # free full copies
     logger.info(
-        "Train samples: %s  |  Val samples: %s",
-        f"{len(y_train):,}", f"{len(y_val):,}",
+        "Train samples: %s  |  Val-time samples: %s  |  Val-user samples: %s",
+        f"{len(y_train):,}", f"{len(y_val_time):,}",
+        f"{len(y_val_user):,}",
     )
+    if len(y_val_user) == 0:
+        logger.warning(
+            "Val-user set is empty; no users are exclusive to validation."
+        )
     logger.info("=" * 50)
 
     # ------------------------------------------------------------------
     # Build tf.data datasets
     # ------------------------------------------------------------------
-    feature_dim = len(vec.feature_names_)
+    feature_dim = vec.n_features
 
     train_ds = _build_tf_dataset(
         X_agg_train, X_seq_train, y_train,
@@ -887,13 +930,22 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
-    val_ds = _build_tf_dataset(
-        X_agg_val, X_seq_val, y_val,
+    val_time_ds = _build_tf_dataset(
+        X_agg_val_time, X_seq_val_time, y_val_time,
         max_seq_len=MAX_SEQ_LENGTH,
         feature_dim=feature_dim,
         batch_size=BATCH_SIZE,
         shuffle=False,
     )
+    val_user_ds = None
+    if len(y_val_user) > 0:
+        val_user_ds = _build_tf_dataset(
+            X_agg_val_user, X_seq_val_user, y_val_user,
+            max_seq_len=MAX_SEQ_LENGTH,
+            feature_dim=feature_dim,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+        )
 
     # ------------------------------------------------------------------
     # STEP 7: Build model
@@ -921,7 +973,7 @@ def main():
 
     history = model.fit(
         train_ds,
-        validation_data=val_ds,
+        validation_data=val_time_ds,
         epochs=EPOCHS,
         callbacks=callbacks,
         class_weight=class_weight_dict,
@@ -936,11 +988,19 @@ def main():
     # ------------------------------------------------------------------
     # Evaluate
     # ------------------------------------------------------------------
-    loss, accuracy = model.evaluate(val_ds)
+    loss, accuracy = model.evaluate(val_time_ds)
     logger.info(
-        "Validation Loss: %.4f  |  Validation Accuracy: %.2f%%",
+        "Val-time Loss: %.4f  |  Val-time Accuracy: %.2f%%",
         loss, accuracy * 100,
     )
+    val_user_loss = None
+    val_user_accuracy = None
+    if val_user_ds is not None:
+        val_user_loss, val_user_accuracy = model.evaluate(val_user_ds)
+        logger.info(
+            "Val-user Loss: %.4f  |  Val-user Accuracy: %.2f%%",
+            val_user_loss, val_user_accuracy * 100,
+        )
     logger.info("=" * 50)
 
     # ------------------------------------------------------------------
@@ -959,11 +1019,20 @@ def main():
         "num_classes": num_classes,
         "classes": list(le.classes_),
         "class_weights": class_weight_dict,
-        "vocabulary_size": feature_dim,
+        "feature_dim": feature_dim,
         "train_samples": int(len(y_train)),
-        "val_samples": int(len(y_val)),
-        "val_loss": float(loss),
-        "val_accuracy": float(accuracy),
+        "val_time_samples": int(len(y_val_time)),
+        "val_time_loss": float(loss),
+        "val_time_accuracy": float(accuracy),
+        "val_user_samples": int(len(y_val_user)),
+        "val_user_loss": (
+            float(val_user_loss) if val_user_loss is not None else None
+        ),
+        "val_user_accuracy": (
+            float(val_user_accuracy) if val_user_accuracy is not None else None
+        ),
+        "time_split_fraction": TIME_SPLIT_FRACTION,
+        "time_split_cutoff_ts": int(cutoff_ts),
     }
     save_artifacts(artifact_dir, vec, le, class_weight_dict, run_config)
 
