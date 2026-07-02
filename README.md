@@ -11,9 +11,11 @@ This model implementation is designed to address this challenge. It learns from 
 
 ## Proprietary Model for Channel Imputation
 
-`prop_model_app.py`
+`prop_model_app.py` (CLI entrypoint; implementation in the `channel_imputer/` package)
 
-Provides an end-to-end pipeline that uses event-level data from Google BigQuery to train a dual-input deep learning model for channel imputation. The model learns from both aggregated journey features and the sequence of events in each user journey to predict the dominant channel (e.g., Direct, Email, Organic Search, etc.).
+Provides an end-to-end pipeline that uses event-level data from Google BigQuery to train a dual-input deep learning model for channel imputation. The model learns from both aggregated journey features and the sequence of events in each session to predict the session's channel (e.g., Direct, Email, Organic Search, etc.), and writes a per-event export with imputed channels and confidence scores.
+
+> **Note (v2):** the pipeline was restructured for production use — session-level prediction, hashed features (FeatureHasher), confidence-thresholded imputation, cost-guarded parameterised BigQuery queries, per-class evaluation reports and a CLI. See [fable5.md](fable5.md) for the full change log; some implementation details described below reflect the original design.
 
 ### Overview
 
@@ -102,8 +104,26 @@ Follow these simple steps to run the scripts on your local machine:
    - Place your `service-account-key.json` file in the repository’s root directory.
    - Ensure the scripts (e.g., in `prop_model_app.py`) reference the correct path to this key.
 
-6. **Run the Scripts:**
-   - To run the advanced proprietary model for channel imputation:
+6. **Run the Pipeline:**
+   - Default run (uses the configured GA4 table and date range):
      ```bash
      python prop_model_app.py
      ```
+   - Common options:
+     ```bash
+     python prop_model_app.py \
+       --table my-project.analytics_123.events_* \
+       --start 20250701 --end 20260131 \
+       --max-gb-billed 50 \
+       --confidence-threshold 0.5 \
+       --export-bq-table my-project.marketing.imputed_events
+     ```
+   - Cheap smoke run against live data: add `--limit 50000 --epochs 2`.
+   - See all options with `python prop_model_app.py --help`.
+
+7. **Verify the Installation (no BigQuery needed):**
+   ```bash
+   python tests/smoke_test.py
+   ```
+   Runs the full pipeline end-to-end on synthetic data and asserts the
+   outputs are well-formed.

@@ -1,8 +1,11 @@
 numpy==1.24.4
 pandas==2.2.3
+scipy>=1.10
 google-auth==2.40.2
 google-cloud-bigquery==3.33.0
 scikit-learn==1.6.1
 tensorflow==2.13.0
 db-dtypes==1.1.0
 protobuf==3.20.3
+# Optional: required only for --export-bq-table (BigQuery upload of results)
+pyarrow>=14
